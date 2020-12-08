@@ -1,13 +1,14 @@
-use crate::env::Env;
+use crate::env::{Env, TermWithIndex};
 use crate::Symbol;
+use crate::T;
 use anyhow::{anyhow, Result};
-use std::{fmt, rc::Rc};
+use std::{cell::Cell, fmt, rc::Rc};
 
 pub type LTerm = Rc<Term>;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Term {
-    Variable(Symbol),
+    Variable(Symbol, Cell<Option<usize>>),
     Abstraction(Symbol, LTerm),
     Application(LTerm, LTerm),
 }
@@ -22,7 +23,7 @@ pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
                 _ => Err(anyhow!("Expected an abstraction, got {}", t1)),
             }
         }
-        Term::Variable(s) => env
+        Term::Variable(s, _) => env
             .get(*s)
             .ok_or_else(|| anyhow!("Variable `{}` is not bound", s)),
         _ => Ok(t),
@@ -32,7 +33,7 @@ pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
 pub fn substitute(t: &LTerm, param: Symbol, arg: LTerm) -> LTerm {
     match t.as_ref() {
         // [param → arg]param
-        Term::Variable(v) if *v == param => arg,
+        Term::Variable(v, _) if *v == param => arg,
         // λp.body
         // [param → arg]body if p != param
         Term::Abstraction(p, body) if *p != param => {
@@ -48,10 +49,33 @@ pub fn substitute(t: &LTerm, param: Symbol, arg: LTerm) -> LTerm {
     }
 }
 
+/// Traverse over the Lterm and set all the variables' de Bruijn index.
+pub fn rm_names(t: &LTerm, env: &Env) -> Result<()> {
+    match t.as_ref() {
+        Term::Variable(var, idx) => match env.get_with_calculated_db_index(*var) {
+            Some(TermWithIndex { db_idx, .. }) => {
+                idx.set(Some(db_idx));
+                Ok(())
+            }
+            None => Err(anyhow!("The variable `{}` is not bound", var)),
+        },
+        Term::Abstraction(var, body) => {
+            let mut env = Env::with_parent(&env);
+            // FIXME: Create a new env for the db_idx calculation
+            env.insert(*var, T![var * var]);
+            rm_names(body, &env)
+        }
+        Term::Application(t1, t2) => {
+            rm_names(t1, env)?;
+            rm_names(t2, env)
+        }
+    }
+}
+
 impl fmt::Display for Term {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Term::Variable(v) => v.fmt(f),
+            Term::Variable(v, _) => v.fmt(f),
             Term::Abstraction(p, b) => write!(f, "λ{}.{}", p, b),
             Term::Application(t1, t2) => {
                 let (left_paren, right_paren) = if matches!(t1.as_ref(), Term::Abstraction(_, _)) {
@@ -67,14 +91,17 @@ impl fmt::Display for Term {
 
 impl From<&str> for Term {
     fn from(t: &str) -> Self {
-        Term::Variable(t.into())
+        Term::Variable(t.into(), Cell::new(None))
     }
 }
 
 #[macro_export]
 macro_rules! T {
+    (var $name:expr, $n:expr) => {
+        Rc::new(Term::Variable($name.into(), Some($n).into()))
+    };
     (var $name:expr) => {
-        Rc::new(Term::Variable($name.into()))
+        Rc::new(Term::Variable($name.into(), None.into()))
     };
     (abs $param:expr, $body:expr) => {
         Rc::new(Term::Abstraction($param.into(), $body.clone()))
@@ -175,5 +202,57 @@ mod tests {
         check_env(T![app T![app or, fls], tru], tru, &env);
         // or false false → false
         check_env(T![app T![app or, fls], fls], fls, &env);
+    }
+
+    #[test]
+    fn test_basic_rm_names() {
+        let env = Env::new();
+        let x = T![var "x"];
+        let id = T![abs "x", x];
+        rm_names(&id, &env).expect("Could not remove names");
+        assert_eq!(x, T![var "x", 0]);
+    }
+
+    #[test]
+    fn test_rm_names_selects_the_closest_binding() {
+        let env = Env::new();
+        let id = T![abs "x", T![abs "x", T![var "x"]]];
+        rm_names(&id, &env).expect("Could not remove names");
+        assert_eq!(id, T![abs "x", T![abs "x", T![var "x", 0]]]);
+    }
+
+    #[test]
+    fn test_rm_names_variable_not_bound() {
+        let env = Env::new();
+        let id = T![abs "x", T![var "y"]];
+        assert_eq!(
+            rm_names(&id, &env)
+                .expect_err("Could not remove names")
+                .to_string(),
+            "The variable `y` is not bound"
+        );
+    }
+
+    #[test]
+    fn test_rm_names() {
+        let mut env = Env::new();
+        let tru = T![abs "t", T![abs "f", T![var "t"]]];
+        rm_names(&tru, &env).expect("Could not remove names");
+        assert_eq!(tru, T![abs "t", T![abs "f", T![var "t", 1]]]);
+        env.insert("true", tru);
+
+        let fls = T![abs "t", T![abs "f", T![var "f"]]];
+        rm_names(&fls, &env).expect("Could not remove names");
+        assert_eq!(fls, T![abs "t", T![abs "f", T![var "f", 0]]]);
+        env.insert("false", fls);
+
+        let and =
+            T![abs "b", T![abs "c", T![app T![app T![var "b"], T![var "c"]], T![var "false"]]]];
+        rm_names(&and, &env).expect("Could not remove names");
+        assert_eq!(
+            and,
+            T![abs "b", T![abs "c", T![app T![app T![var "b", 1], T![var "c", 0]], T![var "false", 3]]]]
+        );
+        env.insert("and", and);
     }
 }
