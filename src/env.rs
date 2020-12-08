@@ -16,7 +16,9 @@ impl<'a> Env<'a> {
     pub fn with_parent(parent: &'a Env<'a>) -> Self {
         Self {
             parent: Some(parent),
-            ..Default::default()
+            // Every lambda is only allowed to have one variable
+            // Only the root may have multiple.
+            context: HashMap::with_capacity(1),
         }
     }
 

@@ -31,11 +31,13 @@ pub fn run_repl() -> Result<()> {
         let input = rl.readline(">> ");
 
         match input {
-            Ok(line) => match line.as_ref() {
+            Ok(line) => match line.trim() {
                 r"\q" => {
                     println!("Bye!");
                     break;
                 }
+                // Ignore empty lines
+                "" => {}
                 line => {
                     rl.add_history_entry(line);
                     match parse(line).and_then(|p| eval(p, &env)) {
@@ -69,7 +71,7 @@ pub fn run_repl() -> Result<()> {
 }
 
 fn get_history_file_path() -> Option<PathBuf> {
-    dirs::cache_dir().map(|d| d.with_file_name(".monkey_history"))
+    dirs::cache_dir().map(|d| d.with_file_name(".lc_history"))
 }
 
 fn init_rustyline() -> Editor<()> {

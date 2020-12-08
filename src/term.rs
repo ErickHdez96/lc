@@ -19,7 +19,7 @@ pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
             let t2 = eval(t2.clone(), env)?;
             match t1.as_ref() {
                 Term::Abstraction(param, body) => eval(substitute(body, *param, t2), env),
-                _ => panic!("Expected an abstraction"),
+                _ => Err(anyhow!("Expected an abstraction, got {}", t1)),
             }
         }
         Term::Variable(s) => env
