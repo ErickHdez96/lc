@@ -67,26 +67,27 @@ use crate::env::Env;
 use crate::Symbol;
 use crate::T;
 use anyhow::{anyhow, Result};
-use std::{cell::Cell, fmt, rc::Rc};
+use std::rc::Rc;
 
 pub type LTerm = Rc<Term>;
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Term {
     /// x
-    Variable(Symbol, Cell<Option<usize>>),
+    Variable(/** de Bruijn index */ usize),
     /// λx.t
-    Abstraction(Symbol, LTerm),
+    Abstraction(/** Original name of the parameter */ Symbol, LTerm),
     /// t t
     Application(LTerm, LTerm),
 }
 
 /// Reduce a term using the call-by-value strategy.
 pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
-    rm_names(&t, &env)?;
+    // rm_names(&t, &env)?;
     eval_(t, env)
 }
 
+/// ```text
 /// t ::=                   Terms:
 ///     x                       Variable
 ///     λx.t                    Abstraction
@@ -104,6 +105,7 @@ pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
 /// v1 t2 → v1 t2'
 ///
 /// (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)    (E-AppAbs)
+/// ```
 fn eval_(t: LTerm, env: &Env) -> Result<LTerm> {
     match t.as_ref() {
         Term::Application(t1, t2) => {
@@ -139,10 +141,9 @@ fn eval_(t: LTerm, env: &Env) -> Result<LTerm> {
                 )),
             }
         }
-        Term::Variable(v, idx) => idx
-            .get()
-            .and_then(|idx| env.get_from_db_index(idx))
-            .ok_or_else(|| anyhow!("Variable `{}` is not bound", v)),
+        Term::Variable(idx) => env
+            .get_from_db_index(*idx)
+            .ok_or_else(|| anyhow!("Invalid de Bruijn index: {}", idx)),
         // Evaluating an abstraction, yields the abstraction itself.
         _ => Ok(t),
     }
@@ -159,15 +160,11 @@ fn eval_(t: LTerm, env: &Env) -> Result<LTerm> {
 /// ```
 pub fn substitute(t: &LTerm, db_idx: usize, arg: LTerm) -> Result<LTerm> {
     match t.as_ref() {
-        Term::Variable(v, idx) => match idx.get() {
+        Term::Variable(idx) => match *idx {
             // [j → s]k = s if k = j
-            Some(idx) if idx == db_idx => Ok(arg),
+            idx if idx == db_idx => Ok(arg),
             // [j → s]k = k otherwise
-            Some(_) => Ok(t.clone()),
-            None => Err(anyhow!(
-                "Could not substitute: Variable `{}` is not bound",
-                v
-            )),
+            _ => Ok(t.clone()),
         },
         // [j → s](λ.t1) = λ.[j+1 → ↑¹(s)]t1
         Term::Abstraction(v, body) => Ok(T![
@@ -182,28 +179,6 @@ pub fn substitute(t: &LTerm, db_idx: usize, arg: LTerm) -> Result<LTerm> {
     }
 }
 
-/// Traverse over the Lterm and set all the variables' de Bruijn index.
-pub fn rm_names(t: &LTerm, env: &Env) -> Result<()> {
-    match t.as_ref() {
-        Term::Variable(var, idx) => match env.get_db_index(*var) {
-            Some(db_idx) => {
-                idx.set(Some(db_idx));
-                Ok(())
-            }
-            None => Err(anyhow!("The variable `{}` is not bound", var)),
-        },
-        Term::Abstraction(var, body) => {
-            let mut env = Env::with_parent(&env);
-            env.insert_local(*var);
-            rm_names(body, &env)
-        }
-        Term::Application(t1, t2) => {
-            rm_names(t1, env)?;
-            rm_names(t2, env)
-        }
-    }
-}
-
 /// The _d_-place shift of a term `t` above cutoff `c`, written here
 /// as ↑[d,c](t), is defined as follows:
 ///
@@ -215,19 +190,15 @@ pub fn rm_names(t: &LTerm, env: &Env) -> Result<()> {
 /// ```
 fn shift(t: LTerm, d_place: isize, cutoff: usize) -> Result<LTerm> {
     match t.as_ref() {
-        Term::Variable(v, idx) => match idx.get() {
+        Term::Variable(idx) => match *idx {
             // ↑[d,c](k) = k if k < c
-            Some(idx) if idx < cutoff => Ok(t),
+            idx if idx < cutoff => Ok(t),
             // ↑[d,c](k) = k + d if k ≥ c
-            Some(idx) => {
+            idx => {
                 use std::convert::TryFrom;
                 let new_idx = usize::try_from(isize::try_from(idx)? + d_place)?;
-                Ok(T![var(*v), new_idx])
+                Ok(T![var new_idx])
             }
-            None => Err(anyhow!(
-                "Tried to shift a variable with no de Bruijn index, `{}`",
-                v
-            )),
         },
         // ↑[d,c](λ.t1) = λ.↑[d,c+1]t1
         Term::Abstraction(var, body) => {
@@ -244,9 +215,9 @@ fn shift(t: LTerm, d_place: isize, cutoff: usize) -> Result<LTerm> {
 
 pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
     match t.as_ref() {
-        Term::Variable(v, idx) => match idx.get().and_then(|i| env.get_name_from_db_index(i)) {
+        Term::Variable(idx) => match env.get_name_from_db_index(*idx) {
             Some(v) => Ok(v.to_string()),
-            None => Err(anyhow!("The variable `{}` is not bound", v)),
+            None => Err(anyhow!("Invalid de Bruijn index: {}", *idx)),
         },
         Term::Abstraction(param, body) => {
             let (param, env) = new_name(*param, &env);
@@ -280,41 +251,10 @@ fn new_name<'a>(s: impl Into<Symbol>, env: &'a Env) -> (Symbol, Env<'a>) {
     (current_symbol, new_env)
 }
 
-impl fmt::Debug for Term {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Term::Variable(v, idx) => match idx.get() {
-                Some(idx) => write!(f, "({} {})", v, idx),
-                None => v.fmt(f),
-            },
-            Term::Abstraction(p, b) => write!(f, "(λ{}.{:?})", p, b),
-            Term::Application(t1, t2) => {
-                let (lp_t1, rp_t1) = if matches!(t1.as_ref(), Term::Abstraction(_, _)) {
-                    ("(", ")")
-                } else {
-                    ("", "")
-                };
-                let (lp_t2, rp_t2) = if matches!(t2.as_ref(), Term::Application(_, _)) {
-                    ("(", ")")
-                } else {
-                    ("", "")
-                };
-                write!(f, "{}{:?}{} {}{:?}{}", lp_t1, t1, rp_t1, lp_t2, t2, rp_t2)
-            }
-        }
-    }
-}
-
-impl From<&str> for Term {
-    fn from(t: &str) -> Self {
-        Term::Variable(t.into(), Cell::new(None))
-    }
-}
-
 #[macro_export]
 macro_rules! T {
-    (var $name:expr, $n:expr $(,)?) => {
-        Rc::new(Term::Variable($name.into(), Some($n).into()))
+    (var $n:expr $(,)?) => {
+        Rc::new(Term::Variable($n))
     };
     (var $name:expr $(,)?) => {
         Rc::new(Term::Variable($name.into(), None.into()))
@@ -351,208 +291,141 @@ mod tests {
 
     /// Evaluating a variable, returns the abstraction pointed to by the variable
     #[test]
-    fn test_eval_variable() {
+    fn test_eval_variable() -> Result<()> {
         let mut env = Env::new();
-        let x = T![var "x"];
-        let id = T![abs "x", x];
-        env.insert_variable("x", id.clone());
+        let id = parse("λx.x", &env)?;
+        env.insert_variable("id", id.clone());
 
-        check_env(T![var "x"], id, &env);
+        check_env(parse("id", &env)?, id, &env);
+        Ok(())
     }
 
     /// Evaluating an abstraction, returns the abstraction
     #[test]
-    fn test_eval_abstraction() {
-        let id = T![abs "x", T![var "x"]];
+    fn test_eval_abstraction() -> Result<()> {
+        let id = parse("λx.x", &Env::new())?;
         check(id.clone(), id);
+        Ok(())
     }
 
     #[test]
-    fn test_application_abstraction_to_abstraction() {
-        let x = T![var "x"];
-        // λx.x
-        let id = T![abs "x", x];
-
-        check(T![app id, id], id);
-    }
-
-    #[test]
-    fn test_booleans() {
+    fn test_application_abstraction_to_abstraction() -> Result<()> {
+        let id = parse("λx.x", &Env::new())?;
         let mut env = Env::new();
-        let tru = parse("λt.λf.t").expect("Could not parse");
-        // λt.λf.f
-        let fls = parse("λt.λf.f").expect("Could not parse");
-        // λb.λc. b c false
-        let and = parse("λb.λc.b c false").expect("Could not parse");
+        env.insert_variable("id", id.clone());
 
-        rm_names(&tru, &env).unwrap();
+        check_env(parse("id id", &env)?, id, &env);
+        Ok(())
+    }
+
+    #[test]
+    fn test_booleans() -> Result<()> {
+        let mut env = Env::new();
+        let tru = parse("λt.λf.t", &env)?;
         env.insert_variable("true", tru.clone());
-        rm_names(&fls, &env).unwrap();
+        // λt.λf.f
+        let fls = parse("λt.λf.f", &env)?;
         env.insert_variable("false", fls.clone());
-        rm_names(&and, &env).unwrap();
+        // λb.λc. b c false
+        let and = parse("λb.λc.b c false", &env)?;
         env.insert_variable("and", and.clone());
 
         // and true true → true
-        check_env(T![app T![app and, tru], tru], tru.clone(), &env);
+        check_env(parse("and true true", &env)?, tru.clone(), &env);
         // and true false → false
-        check_env(T![app T![app and, tru], fls], fls.clone(), &env);
+        check_env(parse("and true false", &env)?, fls.clone(), &env);
         // and false true → false
-        check_env(T![app T![app and, fls], tru], fls.clone(), &env);
+        check_env(parse("and false true", &env)?, fls.clone(), &env);
         // and false false → false
-        check_env(T![app T![app and, fls], fls], fls.clone(), &env);
+        check_env(parse("and false false", &env)?, fls.clone(), &env);
 
         // λb. b false true
-        let not = parse("λb. b false true").expect("Could not parse");
-        rm_names(&not, &env).unwrap();
+        let not = parse("λb. b false true", &env)?;
         env.insert_variable("not", not.clone());
 
         // not true → false
-        check_env(T![app not, tru], fls.clone(), &env);
+        check_env(parse("not true", &env)?, fls.clone(), &env);
         // not false → true
-        check_env(T![app not, fls], tru.clone(), &env);
+        check_env(parse("not false", &env)?, tru.clone(), &env);
 
         // λb.λc. b true c
-        let or = T![abs "b", T![abs "c", T![app T![app T![var "b"], T![var "true"]], T![var "c"]]]];
-        rm_names(&or, &env).unwrap();
+        let or = parse("λb.λc.b true c", &env)?;
         env.insert_variable("or", or.clone());
 
         // or true true → true
-        check_env(T![app T![app or, tru], tru], tru.clone(), &env);
+        check_env(parse("or true true", &env)?, tru.clone(), &env);
         // or true false → true
-        check_env(T![app T![app or, tru], fls], tru.clone(), &env);
+        check_env(parse("or true false", &env)?, tru.clone(), &env);
         // or false true → true
-        check_env(T![app T![app or, fls], tru], tru, &env);
+        check_env(parse("or false true", &env)?, tru.clone(), &env);
         // or false false → false
-        check_env(T![app T![app or, fls], fls], fls, &env);
+        check_env(parse("or false false", &env)?, fls.clone(), &env);
+        Ok(())
     }
 
     #[test]
-    fn test_basic_rm_names() {
-        let env = Env::new();
-        let x = T![var "x"];
-        let id = T![abs "x", x];
-        rm_names(&id, &env).expect("Could not remove names");
-        assert_eq!(x, T![var "x", 0]);
-    }
-
-    #[test]
-    fn test_rm_names_selects_the_closest_binding() {
-        let env = Env::new();
-        let id = T![abs "x", T![abs "x", T![var "x"]]];
-        rm_names(&id, &env).expect("Could not remove names");
-        assert_eq!(id, T![abs "x", T![abs "x", T![var "x", 0]]]);
-    }
-
-    #[test]
-    fn test_rm_names_variable_not_bound() {
-        let env = Env::new();
-        let id = T![abs "x", T![var "y"]];
-        assert_eq!(
-            rm_names(&id, &env)
-                .expect_err("Could not remove names")
-                .to_string(),
-            "The variable `y` is not bound"
-        );
-    }
-
-    #[test]
-    fn test_rm_names() {
+    fn test_shifting() -> Result<()> {
         let mut env = Env::new();
-        let tru = T![abs "t", T![abs "f", T![var "t"]]];
-        rm_names(&tru, &env).expect("Could not remove names");
-        assert_eq!(tru, T![abs "t", T![abs "f", T![var "t", 1]]]);
-        env.insert_variable("true", tru);
+        let tru = parse("λt.λf.t", &env)?;
+        env.insert_variable("true", tru.clone());
 
-        let fls = T![abs "t", T![abs "f", T![var "f"]]];
-        rm_names(&fls, &env).expect("Could not remove names");
-        assert_eq!(fls, T![abs "t", T![abs "f", T![var "f", 0]]]);
-        env.insert_variable("false", fls);
-
-        let and =
-            T![abs "b", T![abs "c", T![app T![app T![var "b"], T![var "c"]], T![var "false"]]]];
-        rm_names(&and, &env).expect("Could not remove names");
-        assert_eq!(
-            and,
-            T![abs "b", T![abs "c", T![app T![app T![var "b", 1], T![var "c", 0]], T![var "false", 3]]]]
-        );
-        env.insert_variable("and", and);
-    }
-
-    #[test]
-    fn test_shifting() {
-        let id = T![abs "x", T![var "x", 0]];
+        let id = parse("λx.x", &env)?;
+        env.insert_variable("id", id.clone());
 
         let id_shifted = shift(id.clone(), 1, 0).expect("Couldn't shift term");
         // Shouldn't touch id
         assert_eq!(id_shifted, id);
 
-        let r#const = T![abs "x", T![var "true", 1]];
+        let r#const = parse("λx.true", &env)?;
         let const_shifted = shift(r#const.clone(), 1, 0).expect("Couldn't shift term");
         // Should shift true from 1 → 2
-        assert_eq!(const_shifted, T![abs "x", T![var "true", 2]]);
-        // Shouldn't modify const
-        assert_eq!(r#const, T![abs "x", T![var "true", 1]]);
+        assert_eq!(const_shifted, T![abs "x", T![var 2]]);
 
-        let test = T![app T![var "x", 0], T![var "y", 1]];
+        let test = parse("true id", &env)?;
         let test_shifted = shift(test.clone(), 3, 1).expect("Couldn't shift term");
-        assert_eq!(test_shifted, T![app T![var "x", 0], T![var "y", 4]]);
-        assert_eq!(test, T![app T![var "x", 0], T![var "y", 1]]);
+        assert_eq!(test_shifted, T![app T![var 0], T![var 4]]);
+        assert_eq!(test, T![app T![var 0], T![var 1]]);
 
         // ↑²(λ.λ.1 (0 2))
-        let book_example_1 = T![abs "x", T![abs "y", T![app T![var "x", 1], T![app T![var "y", 0], T![var "true", 2]]]]];
+        let book_example_1 = parse("λx.λy.x (y true)", &env)?;
         let b_ex_1_shifted = shift(book_example_1.clone(), 2, 0).expect("Couldn't shift term");
         // Expected λ.λ.1 (0 4)
         assert_eq!(
             b_ex_1_shifted,
-            T![abs "x", T![abs "y", T![app T![var "x", 1], T![app T![var "y", 0], T![var "true", 4]]]]]
-        );
-        // Shouldn't modify book_example_1
-        assert_eq!(
-            book_example_1,
-            T![abs "x", T![abs "y", T![app T![var "x", 1], T![app T![var "y", 0], T![var "true", 2]]]]]
+            T![abs "x", T![abs "y", T![app T![var 1], T![app T![var 0], T![var 4]]]]]
         );
 
         // ↑²(λ.0 1 (λ. 0 1 2))
-        let book_example_2 = T![abs "x", T![app T![app T![var "x", 0], T![var "true", 1]], T![abs "y", T![app T![app T![var "y", 0], T![var "x", 1]], T![var "true", 2]]]]];
+        let book_example_2 = parse("λx.x true (λy.y x true)", &env)?;
         let b_ex_2_shifted = shift(book_example_2.clone(), 2, 0).expect("Couldn't shift term");
         // Expected λ.0 3 (λ. 0 1 4)
         assert_eq!(
             b_ex_2_shifted,
-            T![abs "x", T![app T![app T![var "x", 0], T![var "true", 3]], T![abs "y", T![app T![app T![var "y", 0], T![var "x", 1]], T![var "true", 4]]]]]
+            T![abs "x", T![app T![app T![var 0], T![var 3]], T![abs "y", T![app T![app T![var 0], T![var 1]], T![var 4]]]]]
         );
-        // Shouldn't modify book_example_2
-        assert_eq!(
-            book_example_2,
-            T![abs "x", T![app T![app T![var "x", 0], T![var "true", 1]], T![abs "y", T![app T![app T![var "y", 0], T![var "x", 1]], T![var "true", 2]]]]]
-        );
+        Ok(())
     }
 
     #[test]
     fn test_de_bruijn_indices_work() -> Result<()> {
         let mut env = Env::new();
-        let t = parse("λt.λf.t")?;
-        rm_names(&t, &env)?;
+        let t = parse("λt.λf.t", &env)?;
         assert_eq!(term_to_string(&t, &env)?, "λt.λf.t");
 
-        let t = parse("λx.x x")?;
-        rm_names(&t, &env)?;
+        let t = parse("λx.x x", &env)?;
         assert_eq!(term_to_string(&t, &env)?, "λx.x x");
 
-        let t = parse("λx.λx.x")?;
-        rm_names(&t, &env)?;
+        let t = parse("λx.λx.x", &env)?;
         assert_eq!(term_to_string(&t, &env)?, "λx.λx'.x'");
 
-        let t = parse("(λx.λy.x y) λx.x")?;
-        rm_names(&t, &env)?;
+        let t = parse("(λx.λy.x y) λx.x", &env)?;
         let t = eval(t, &env)?;
         assert_eq!(term_to_string(&t, &env)?, "λy.(λx.x) y");
 
-        let id = parse("λx.x")?;
-        rm_names(&id, &env)?;
+        let id = parse("λx.x", &env)?;
         env.insert_variable("id", id);
 
-        let t = parse("(λz.λid.id z) λz.id z")?;
-        rm_names(&t, &env)?;
+        let t = parse("(λz.λid.id z) λz.id z", &env)?;
         let t = eval(t, &env)?;
         assert_eq!(term_to_string(&t, &env)?, "λid'.id' λz.id z");
         Ok(())

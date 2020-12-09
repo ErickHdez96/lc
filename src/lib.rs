@@ -4,5 +4,6 @@ pub mod parser;
 pub mod term;
 
 pub use env::Env;
+pub use parser::parse;
 pub use string_interner::Symbol;
 pub use term::{LTerm, Term};

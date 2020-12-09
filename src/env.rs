@@ -1,4 +1,4 @@
-use crate::term::{rm_names, LTerm};
+use crate::term::LTerm;
 use crate::Symbol;
 use anyhow::Result;
 use log::error;
@@ -74,27 +74,6 @@ impl<'a> Env<'a> {
     /// Get the de Bruijn index of the term pointed to by `name`.
     ///
     /// The index is calculated by the depth of the search + the original db_idx.
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// use lc::env::Env;
-    /// use lc::{T, Term};
-    /// use std::rc::Rc;
-    ///
-    /// let mut env_1 = Env::new();
-    /// let id = T![abs "x", T![var "x"]];
-    /// env_1.insert_variable("id", id.clone());
-    /// assert_eq!(env_1.get_db_index("id"), Some(0));
-    ///
-    /// let mut env_2 = Env::with_parent(&env_1);
-    /// let r#true = T![abs "t", T![abs "f", T![var "t"]]];
-    /// env_2.insert_variable("true", r#true.clone());
-    /// assert_eq!(env_2.get_db_index("id"), Some(1));
-    /// assert_eq!(env_2.get_db_index("true"), Some(0));
-    ///
-    /// assert_eq!(env_2.get_db_index("y"), None);
-    /// ```
     pub fn get_db_index(&self, name: impl Into<Symbol>) -> Option<usize> {
         self.get_db_index_(name.into(), 0)
     }
@@ -127,8 +106,7 @@ fn base_env_() -> Result<Env<'static>> {
 
     macro_rules! p {
         ($name:expr, $input:expr, $env:expr) => {
-            let t = parse($input)?;
-            rm_names(&t, &$env)?;
+            let t = parse($input, &$env)?;
             $env.insert_variable($name, t);
         };
     }
@@ -165,19 +143,18 @@ fn base_env_() -> Result<Env<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Term, T};
-    use std::rc::Rc;
+    use crate::parser::parse;
 
     #[test]
     fn test_env() -> Result<()> {
         let mut env = Env::new();
         assert_eq!(env.get("id"), None);
 
-        let id = T![abs "x", T![var "x", 0]];
+        let id = parse("λx.x", &env)?;
         env.insert_variable("id", id.clone());
         assert_eq!(env.get("id"), Some(id.clone()));
 
-        let tru = T![abs "t", T![abs "f", T![var "t", 1]]];
+        let tru = parse("λt.λf.t", &env)?;
         env.insert_variable("true", tru.clone());
         assert_eq!(env.get("true"), Some(tru.clone()));
         assert_eq!(env.get("id"), Some(id.clone()));
