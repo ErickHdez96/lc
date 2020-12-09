@@ -72,6 +72,24 @@ pub fn rm_names(t: &LTerm, env: &Env) -> Result<()> {
     }
 }
 
+fn shift(t: LTerm, d_place: usize, cutoff: usize) -> Result<LTerm> {
+    match t.as_ref() {
+        Term::Variable(v, idx) => match idx.get() {
+            Some(idx) if idx < cutoff => Ok(t),
+            Some(idx) => Ok(T![var * v, idx + d_place]),
+            None => Err(anyhow!("Tried to shift a variable with no de Bruijn index")),
+        },
+        Term::Abstraction(var, body) => {
+            Ok(T![abs * var, shift(body.clone(), d_place, cutoff + 1)?])
+        }
+        Term::Application(t1, t2) => {
+            let t1 = shift(t1.clone(), d_place, cutoff)?;
+            let t2 = shift(t2.clone(), d_place, cutoff)?;
+            Ok(T![app t1, t2])
+        }
+    }
+}
+
 impl fmt::Display for Term {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -254,5 +272,24 @@ mod tests {
             T![abs "b", T![abs "c", T![app T![app T![var "b", 1], T![var "c", 0]], T![var "false", 3]]]]
         );
         env.insert("and", and);
+    }
+
+    #[test]
+    fn test_shifting() {
+        let id = T![abs "x", T![var "x", 0]];
+
+        let id_shifted = shift(id.clone(), 1, 0).expect("Couldn't shift term");
+        // Shouldn't touch id
+        assert_eq!(id_shifted, id);
+
+        let r#const = T![abs "x", T![var "true", 1]];
+        let const_shifted = shift(r#const, 1, 0).expect("Couldn't shift term");
+        // Should shift true from 1 → 2
+        assert_eq!(const_shifted, T![abs "x", T![var "true", 2]]);
+
+        let test = T![app T![var "x", 0], T![var "y", 1]];
+        let test_shifted = shift(test, 3, 1).expect("Couldn't shift term");
+        // Should shift true from 1 → 2
+        assert_eq!(test_shifted, T![app T![var "x", 0], T![var "y", 4]]);
     }
 }
