@@ -68,6 +68,7 @@ use crate::Symbol;
 use crate::T;
 use anyhow::{anyhow, Result};
 use std::rc::Rc;
+use std::convert::TryFrom;
 
 pub type LTerm = Rc<Term>;
 
@@ -79,12 +80,6 @@ pub enum Term {
     Abstraction(/** Original name of the parameter */ Symbol, LTerm),
     /// t t
     Application(LTerm, LTerm),
-}
-
-/// Reduce a term using the call-by-value strategy.
-pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
-    // rm_names(&t, &env)?;
-    eval_(t, env)
 }
 
 /// ```text
@@ -106,7 +101,7 @@ pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
 ///
 /// (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)    (E-AppAbs)
 /// ```
-fn eval_(t: LTerm, env: &Env) -> Result<LTerm> {
+pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
     match t.as_ref() {
         Term::Application(t1, t2) => {
             //    t1 → t1'
@@ -114,25 +109,25 @@ fn eval_(t: LTerm, env: &Env) -> Result<LTerm> {
             // t1 t2 → t1' t2
             // If t1 can be evaluated, it is evaluated first
             // E-App1
-            let v1 = eval_(t1.clone(), env)?;
+            let v1 = eval(t1.clone(), env)?;
             //    t2 → t2'
             // --------------
             // v1 t2 → v1' t2'
             // Once t1 is a value which can no longer be evaluated
             // We evaluate t2
             // E-App2
-            let v2 = eval_(t2.clone(), env)?;
+            let v2 = eval(t2.clone(), env)?;
             match v1.as_ref() {
                 // E-AppAbs
                 // (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)
                 Term::Abstraction(_, body) => {
                     // s_v2 = ↑¹(v2)
-                    let shifted_v2 = shift(v2, 1, 0)?;
+                    let shifted_v2 = shift(&v2, 1)?;
                     // sub = [0 → s_v2]t12
                     let substitution = substitute(body, 0, shifted_v2)?;
                     // shi = ↑⁻¹sub
-                    let shifted = shift(substitution, -1, 0)?;
-                    let evaluation = eval_(shifted, &env)?;
+                    let shifted = shift(&substitution, -1)?;
+                    let evaluation = eval(shifted, &env)?;
                     Ok(evaluation)
                 }
                 _ => Err(anyhow!(
@@ -158,25 +153,8 @@ fn eval_(t: LTerm, env: &Env) -> Result<LTerm> {
 /// [j → s](λ.t1) = λ.[j+1 → ↑¹(s)]t1
 /// [j → s](t1 t2) = ([j → s]t1 [j → s]t2)
 /// ```
-pub fn substitute(t: &LTerm, db_idx: usize, arg: LTerm) -> Result<LTerm> {
-    match t.as_ref() {
-        Term::Variable(idx) => match *idx {
-            // [j → s]k = s if k = j
-            idx if idx == db_idx => Ok(arg),
-            // [j → s]k = k otherwise
-            _ => Ok(t.clone()),
-        },
-        // [j → s](λ.t1) = λ.[j+1 → ↑¹(s)]t1
-        Term::Abstraction(v, body) => Ok(T![
-            abs * v,
-            substitute(body, db_idx + 1, shift(arg, 1, 0)?)?
-        ]),
-        // [j → s](t1 t2) = ([j → s]t1 [j → s]t2)
-        Term::Application(t1, t2) => Ok(T![app
-            substitute(t1, db_idx, arg.clone())?,
-            substitute(t2, db_idx, arg)?,
-        ]),
-    }
+fn substitute(t: &LTerm, db_idx: usize, arg: LTerm) -> Result<LTerm> {
+    term_map(t, 0, |idx, c| if idx == c + db_idx { shift(&arg, isize::try_from(c)?) } else { Ok(T![var idx]) })
 }
 
 /// The _d_-place shift of a term `t` above cutoff `c`, written here
@@ -188,29 +166,31 @@ pub fn substitute(t: &LTerm, db_idx: usize, arg: LTerm) -> Result<LTerm> {
 /// ↑[d,c](λ.t1) = λ.↑[d,c+1]t1
 /// ↑[d,c](t1 t2) = ↑[d,c](t1) ↑[d,c](t2)
 /// ```
-fn shift(t: LTerm, d_place: isize, cutoff: usize) -> Result<LTerm> {
-    match t.as_ref() {
-        Term::Variable(idx) => match *idx {
-            // ↑[d,c](k) = k if k < c
-            idx if idx < cutoff => Ok(t),
-            // ↑[d,c](k) = k + d if k ≥ c
-            idx => {
-                use std::convert::TryFrom;
-                let new_idx = usize::try_from(isize::try_from(idx)? + d_place)?;
-                Ok(T![var new_idx])
-            }
-        },
-        // ↑[d,c](λ.t1) = λ.↑[d,c+1]t1
-        Term::Abstraction(var, body) => {
-            Ok(T![abs * var, shift(body.clone(), d_place, cutoff + 1)?])
-        }
-        // ↑[d,c](t1 t2) = ↑[d,c](t1) ↑[d,c](t2)
-        Term::Application(t1, t2) => {
-            let t1 = shift(t1.clone(), d_place, cutoff)?;
-            let t2 = shift(t2.clone(), d_place, cutoff)?;
-            Ok(T![app t1, t2])
+fn shift_above(t: &LTerm, d_place: isize, cutoff: usize) -> Result<LTerm> {
+    term_map(t, cutoff, |idx, c| {
+        Ok(if idx >= c {
+            let new_idx = usize::try_from(isize::try_from(idx)? + d_place)?;
+            T![var new_idx]
+        } else { T![var idx] })
+    })
+}
+
+fn shift(t: &LTerm, d_place: isize) -> Result<LTerm> {
+    shift_above(t, d_place, 0)
+}
+
+fn term_map<F>(t: &LTerm, cutoff: usize, on_var: F) -> Result<LTerm>
+where
+    F: Fn(usize, usize) -> Result<LTerm>
+{
+    fn map<F: Fn(usize, usize) -> Result<LTerm>>(t: &LTerm, cutoff: usize, on_var: &F) -> Result<LTerm> {
+        match t.as_ref() {
+            Term::Variable(idx) => on_var(*idx, cutoff),
+            Term::Abstraction(v, body) => Ok(T![abs (*v), map(body, cutoff + 1, on_var)?]),
+            Term::Application(t1, t2) => Ok(T![app map(t1, cutoff, on_var)?, map(t2, cutoff, on_var)?]),
         }
     }
+    map(t, cutoff, &on_var)
 }
 
 pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
@@ -372,23 +352,23 @@ mod tests {
         let id = parse("λx.x", &env)?;
         env.insert_variable("id", id.clone());
 
-        let id_shifted = shift(id.clone(), 1, 0).expect("Couldn't shift term");
+        let id_shifted = shift(&id, 1)?;
         // Shouldn't touch id
         assert_eq!(id_shifted, id);
 
         let r#const = parse("λx.true", &env)?;
-        let const_shifted = shift(r#const.clone(), 1, 0).expect("Couldn't shift term");
+        let const_shifted = shift(&r#const, 1)?;
         // Should shift true from 1 → 2
         assert_eq!(const_shifted, T![abs "x", T![var 2]]);
 
         let test = parse("true id", &env)?;
-        let test_shifted = shift(test.clone(), 3, 1).expect("Couldn't shift term");
+        let test_shifted = shift_above(&test, 3, 1)?;
         assert_eq!(test_shifted, T![app T![var 0], T![var 4]]);
         assert_eq!(test, T![app T![var 0], T![var 1]]);
 
         // ↑²(λ.λ.1 (0 2))
         let book_example_1 = parse("λx.λy.x (y true)", &env)?;
-        let b_ex_1_shifted = shift(book_example_1.clone(), 2, 0).expect("Couldn't shift term");
+        let b_ex_1_shifted = shift(&book_example_1, 2)?;
         // Expected λ.λ.1 (0 4)
         assert_eq!(
             b_ex_1_shifted,
@@ -397,7 +377,7 @@ mod tests {
 
         // ↑²(λ.0 1 (λ. 0 1 2))
         let book_example_2 = parse("λx.x true (λy.y x true)", &env)?;
-        let b_ex_2_shifted = shift(book_example_2.clone(), 2, 0).expect("Couldn't shift term");
+        let b_ex_2_shifted = shift(&book_example_2, 2)?;
         // Expected λ.0 3 (λ. 0 1 4)
         assert_eq!(
             b_ex_2_shifted,

@@ -89,29 +89,23 @@ impl<'a> Parser<'a> {
             "parse_application_or_var should only be called on an Ident or an opening parentheses"
         );
 
-        // If we're at an identifier at the end of the string, or following a ')'
-        // We parse only a single variable
-        if self.current() == TokenKind::Ident
-            && matches!(self.nth(1), TokenKind::Eof | TokenKind::RParen)
-        {
-            return self.parse_ident(env);
-        }
-
         let mut application_items = vec![];
         while !matches!(self.current(), TokenKind::Eof | TokenKind::RParen) {
             let term = self.parse_term(false, &env)?;
             application_items.push(term);
         }
         debug_assert!(
-            application_items.len() >= 2,
-            "At least two terms should have been parsed for an application"
+            application_items.len() >= 1,
+            "At least one term should have been parsed"
         );
 
-        let mut application_items = application_items.iter();
+        let mut application_items = application_items.into_iter();
         let t1 = application_items.next().unwrap();
-        let t2 = application_items.next().unwrap();
 
-        Ok(application_items.fold(T![app t1, t2], |acc, current| T![app acc, current]))
+        match application_items.next() {
+            Some(t2) => Ok(application_items.fold(T![app t1, t2], |acc, current| T![app acc, current])),
+            None => Ok(t1),
+        }
     }
 
     fn parse_ident(&mut self, env: &Env) -> Result<LTerm> {
@@ -143,7 +137,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::T;
+    use crate::{T, env::base_env};
     use std::rc::Rc;
 
     fn check(input: &str, expected: LTerm) {
@@ -207,5 +201,13 @@ mod tests {
     #[test]
     fn error_parse_unknown_character() {
         check_error(";", "Expected a term, got `;`");
+    }
+
+    /// A single term inside parentheses should parse to the term inside.
+    #[test]
+    fn test_single_term_inside_parentheses() -> Result<()> {
+        let env = base_env();
+        assert_eq!(parse("(λx.x)", &env)?, parse("λx.x", &env)?);
+        Ok(())
     }
 }
