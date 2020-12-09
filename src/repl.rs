@@ -1,31 +1,15 @@
 use anyhow::Result;
-use lc::{
-    env::Env,
-    parser::parse,
-    term::{eval, Term},
-    T,
-};
+use lc::{env::base_env, parser::parse, term::eval};
 use log::{error, warn};
 use rustyline::{error::ReadlineError, Editor};
 use std::path::PathBuf;
-use std::rc::Rc;
 
 pub fn run_repl() -> Result<()> {
     env_logger::init();
     let mut rl = init_rustyline();
     println!("Hello! Welcome to the lambda calculus evaluator");
 
-    let mut env = Env::new();
-    let tru = T![abs "t", T![abs "f", T![var "t"]]];
-    let fls = T![abs "t", T![abs "f", T![var "f"]]];
-    let not = T![abs "b", T![app T![app T![var "b"], fls], tru]];
-    let and = T![abs "b", T![abs "c", T![app T![app T![var "b"], T![var "c"]], T![var "false"]]]];
-    let or = T![abs "b", T![abs "c", T![app T![app T![var "b"], T![var "true"]], T![var "c"]]]];
-    env.insert("true", tru);
-    env.insert("false", fls);
-    env.insert("not", not);
-    env.insert("and", and);
-    env.insert("or", or);
+    let env = base_env();
 
     loop {
         let input = rl.readline(">> ");
