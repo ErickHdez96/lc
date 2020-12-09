@@ -1,4 +1,5 @@
 use anyhow::Result;
+use lc::term::term_to_string;
 use lc::{env::base_env, parser::parse, term::eval};
 use log::{error, warn};
 use rustyline::{error::ReadlineError, Editor};
@@ -24,7 +25,10 @@ pub fn run_repl() -> Result<()> {
                 "" => {}
                 line => {
                     rl.add_history_entry(line);
-                    match parse(line).and_then(|p| eval(p, &env)) {
+                    match parse(line)
+                        .and_then(|p| eval(p, &env))
+                        .and_then(|p| term_to_string(&p, &env))
+                    {
                         Ok(parsed) => println!("{}", parsed),
                         Err(e) => eprintln!("{}", e),
                     }

@@ -63,7 +63,7 @@
 /// arguments that are actually used.
 ///
 /// Here call by value is used.
-use crate::env::{Env, TermWithIndex};
+use crate::env::Env;
 use crate::Symbol;
 use crate::T;
 use anyhow::{anyhow, Result};
@@ -71,7 +71,7 @@ use std::{cell::Cell, fmt, rc::Rc};
 
 pub type LTerm = Rc<Term>;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum Term {
     /// x
     Variable(Symbol, Cell<Option<usize>>),
@@ -129,7 +129,10 @@ fn eval_(t: LTerm, env: &Env) -> Result<LTerm> {
                     let evaluation = eval_(shifted, &env)?;
                     Ok(evaluation)
                 }
-                _ => Err(anyhow!("Expected an abstraction, got {}", t1)),
+                _ => Err(anyhow!(
+                    "Expected an abstraction, got {}",
+                    term_to_string(t1, &env)?
+                )),
             }
         }
         Term::Variable(v, idx) => idx
@@ -169,8 +172,8 @@ pub fn substitute(t: &LTerm, db_idx: usize, arg: LTerm) -> Result<LTerm> {
 /// Traverse over the Lterm and set all the variables' de Bruijn index.
 pub fn rm_names(t: &LTerm, env: &Env) -> Result<()> {
     match t.as_ref() {
-        Term::Variable(var, idx) => match env.get_with_calculated_db_index(*var) {
-            Some(TermWithIndex { db_idx, .. }) => {
+        Term::Variable(var, idx) => match env.get_db_index(*var) {
+            Some(db_idx) => {
                 idx.set(Some(db_idx));
                 Ok(())
             }
@@ -179,7 +182,7 @@ pub fn rm_names(t: &LTerm, env: &Env) -> Result<()> {
         Term::Abstraction(var, body) => {
             let mut env = Env::with_parent(&env);
             // FIXME: Create a new env for the db_idx calculation
-            env.insert(*var, T![var * var]);
+            env.insert_local(*var);
             rm_names(body, &env)
         }
         Term::Application(t1, t2) => {
@@ -210,52 +213,64 @@ fn shift(t: LTerm, d_place: isize, cutoff: usize) -> Result<LTerm> {
     }
 }
 
-pub fn term_to_string(t: &LTerm, env: &Env) -> String {
+pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
     match t.as_ref() {
-        Term::Variable(v, idx) => match idx.get().and_then(|i| env.get_from_db_index(i)) {
-            Some(t) => term_to_string(&t, &env),
-            None => v.to_string(),
+        Term::Variable(v, idx) => match idx.get().and_then(|i| env.get_name_from_db_index(i)) {
+            Some(v) => Ok(v.to_string()),
+            None => Err(anyhow!("The variable `{}` is not bound", v)),
         },
         Term::Abstraction(param, body) => {
             let (param, env) = new_name(*param, &env);
-            format!("(λ{}.{})", param, term_to_string(body, &env))
+            Ok(format!("λ{}.{}", param, term_to_string(body, &env)?))
         }
         Term::Application(t1, t2) => {
+            let t1_paren = matches!(**t1, Term::Abstraction(_, _));
             let t2_paren = matches!(**t2, Term::Application(_, _));
             let (t2_lp, t2_rp) = if t2_paren { ("(", ")") } else { ("", "") };
-            format!(
-                "{} {}{}{}",
-                term_to_string(t1, &env),
+            let (t1_lp, t1_rp) = if t1_paren { ("(", ")") } else { ("", "") };
+            Ok(format!(
+                "{}{}{} {}{}{}",
+                t1_lp,
+                term_to_string(t1, &env)?,
+                t1_rp,
                 t2_lp,
-                term_to_string(t2, &env),
+                term_to_string(t2, &env)?,
                 t2_rp
-            )
+            ))
         }
     }
 }
 
 fn new_name<'a>(s: impl Into<Symbol>, env: &'a Env) -> (Symbol, Env<'a>) {
     let mut current_symbol = s.into();
-    while env.get(current_symbol).is_some() {
+    while env.get_db_index(current_symbol).is_some() {
         current_symbol = Symbol::from(format!("{}'", current_symbol));
     }
     let mut new_env = Env::with_parent(&env);
-    new_env.insert(current_symbol, T![var current_symbol]);
+    new_env.insert_local(current_symbol);
     (current_symbol, new_env)
 }
 
-impl fmt::Display for Term {
+impl fmt::Debug for Term {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Term::Variable(v, _) => v.fmt(f),
-            Term::Abstraction(p, b) => write!(f, "λ{}.{}", p, b),
+            Term::Variable(v, idx) => match idx.get() {
+                Some(idx) => write!(f, "({} {})", v, idx),
+                None => v.fmt(f),
+            },
+            Term::Abstraction(p, b) => write!(f, "(λ{}.{:?})", p, b),
             Term::Application(t1, t2) => {
-                let (left_paren, right_paren) = if matches!(t1.as_ref(), Term::Abstraction(_, _)) {
+                let (lp_t1, rp_t1) = if matches!(t1.as_ref(), Term::Abstraction(_, _)) {
                     ("(", ")")
                 } else {
                     ("", "")
                 };
-                write!(f, "{}{}{} {}", left_paren, t1, right_paren, t2)
+                let (lp_t2, rp_t2) = if matches!(t2.as_ref(), Term::Application(_, _)) {
+                    ("(", ")")
+                } else {
+                    ("", "")
+                };
+                write!(f, "{}{:?}{} {}{:?}{}", lp_t1, t1, rp_t1, lp_t2, t2, rp_t2)
             }
         }
     }
@@ -302,7 +317,6 @@ mod tests {
         let env = env.unwrap_or(&default_env);
 
         let eval_res = eval(lt, &env).expect("Could not evaluate");
-        println!("{}", eval_res);
         assert_eq!(eval_res, expected);
     }
 
@@ -312,7 +326,7 @@ mod tests {
         let mut env = Env::new();
         let x = T![var "x"];
         let id = T![abs "x", x];
-        env.insert("x", id.clone());
+        env.insert_variable("x", id.clone());
 
         check_env(T![var "x"], id, &env);
     }
@@ -343,11 +357,11 @@ mod tests {
         let and = parse("λb.λc.b c false").expect("Could not parse");
 
         rm_names(&tru, &env).unwrap();
-        env.insert("true", tru.clone());
+        env.insert_variable("true", tru.clone());
         rm_names(&fls, &env).unwrap();
-        env.insert("false", fls.clone());
+        env.insert_variable("false", fls.clone());
         rm_names(&and, &env).unwrap();
-        env.insert("and", and.clone());
+        env.insert_variable("and", and.clone());
 
         // and true true → true
         check_env(T![app T![app and, tru], tru], tru.clone(), &env);
@@ -361,7 +375,7 @@ mod tests {
         // λb. b false true
         let not = parse("λb. b false true").expect("Could not parse");
         rm_names(&not, &env).unwrap();
-        env.insert("not", not.clone());
+        env.insert_variable("not", not.clone());
 
         // not true → false
         check_env(T![app not, tru], fls.clone(), &env);
@@ -371,7 +385,7 @@ mod tests {
         // λb.λc. b true c
         let or = T![abs "b", T![abs "c", T![app T![app T![var "b"], T![var "true"]], T![var "c"]]]];
         rm_names(&or, &env).unwrap();
-        env.insert("or", or.clone());
+        env.insert_variable("or", or.clone());
 
         // or true true → true
         check_env(T![app T![app or, tru], tru], tru.clone(), &env);
@@ -418,12 +432,12 @@ mod tests {
         let tru = T![abs "t", T![abs "f", T![var "t"]]];
         rm_names(&tru, &env).expect("Could not remove names");
         assert_eq!(tru, T![abs "t", T![abs "f", T![var "t", 1]]]);
-        env.insert("true", tru);
+        env.insert_variable("true", tru);
 
         let fls = T![abs "t", T![abs "f", T![var "f"]]];
         rm_names(&fls, &env).expect("Could not remove names");
         assert_eq!(fls, T![abs "t", T![abs "f", T![var "f", 0]]]);
-        env.insert("false", fls);
+        env.insert_variable("false", fls);
 
         let and =
             T![abs "b", T![abs "c", T![app T![app T![var "b"], T![var "c"]], T![var "false"]]]];
@@ -432,7 +446,7 @@ mod tests {
             and,
             T![abs "b", T![abs "c", T![app T![app T![var "b", 1], T![var "c", 0]], T![var "false", 3]]]]
         );
-        env.insert("and", and);
+        env.insert_variable("and", and);
     }
 
     #[test]
@@ -488,24 +502,30 @@ mod tests {
     fn test_de_bruijn_indices_work() -> Result<()> {
         let mut env = Env::new();
         let t = parse("λt.λf.t")?;
-        assert_eq!(term_to_string(&t, &env), "(λt.(λf.t))");
+        rm_names(&t, &env)?;
+        assert_eq!(term_to_string(&t, &env)?, "λt.λf.t");
 
         let t = parse("λx.x x")?;
-        assert_eq!(term_to_string(&t, &env), "(λx.x x)");
+        rm_names(&t, &env)?;
+        assert_eq!(term_to_string(&t, &env)?, "λx.x x");
+
+        let t = parse("λx.λx.x")?;
+        rm_names(&t, &env)?;
+        assert_eq!(term_to_string(&t, &env)?, "λx.λx'.x'");
 
         let t = parse("(λx.λy.x y) λx.x")?;
         rm_names(&t, &env)?;
         let t = eval(t, &env)?;
-        assert_eq!(term_to_string(&t, &env), "(λy.(λx.x) y)");
+        assert_eq!(term_to_string(&t, &env)?, "λy.(λx.x) y");
 
         let id = parse("λx.x")?;
         rm_names(&id, &env)?;
-        env.insert("id", id);
+        env.insert_variable("id", id);
 
-        let t = parse("(λx.λid.id x) λx.id x")?;
+        let t = parse("(λz.λid.id z) λz.id z")?;
         rm_names(&t, &env)?;
         let t = eval(t, &env)?;
-        assert_eq!(term_to_string(&t, &env), "(λid'.id' (λx.(λx'.x') x))");
+        assert_eq!(term_to_string(&t, &env)?, "λid'.id' λz.id z");
         Ok(())
     }
 }
