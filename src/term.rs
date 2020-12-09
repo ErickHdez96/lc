@@ -81,6 +81,7 @@ pub enum Term {
     Application(LTerm, LTerm),
 }
 
+/// Reduce a term using the call-by-value strategy.
 pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
     rm_names(&t, &env)?;
     eval_(t, env)
@@ -102,7 +103,7 @@ pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
 /// --------------              E-App2
 /// v1 t2 → v1 t2'
 ///
-/// (λx.t12)v2 → [x → v2]t12    (E-AppAbs)
+/// (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)    (E-AppAbs)
 fn eval_(t: LTerm, env: &Env) -> Result<LTerm> {
     match t.as_ref() {
         Term::Application(t1, t2) => {
@@ -110,14 +111,17 @@ fn eval_(t: LTerm, env: &Env) -> Result<LTerm> {
             // --------------
             // t1 t2 → t1' t2
             // If t1 can be evaluated, it is evaluated first
+            // E-App1
             let v1 = eval_(t1.clone(), env)?;
             //    t2 → t2'
             // --------------
             // v1 t2 → v1' t2'
             // Once t1 is a value which can no longer be evaluated
             // We evaluate t2
+            // E-App2
             let v2 = eval_(t2.clone(), env)?;
             match v1.as_ref() {
+                // E-AppAbs
                 // (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)
                 Term::Abstraction(_, body) => {
                     // s_v2 = ↑¹(v2)
@@ -139,29 +143,38 @@ fn eval_(t: LTerm, env: &Env) -> Result<LTerm> {
             .get()
             .and_then(|idx| env.get_from_db_index(idx))
             .ok_or_else(|| anyhow!("Variable `{}` is not bound", v)),
-        // An abstraction cannot be evaluated
+        // Evaluating an abstraction, yields the abstraction itself.
         _ => Ok(t),
     }
 }
 
+/// The substitution of a term `s` for variable number `j` in a term `t`,
+/// written [j → s]t, is defined as follows:
+///
+/// ```text
+/// [j → s]k = s if k = j
+/// [j → s]k = k otherwise
+/// [j → s](λ.t1) = λ.[j+1 → ↑¹(s)]t1
+/// [j → s](t1 t2) = ([j → s]t1 [j → s]t2)
+/// ```
 pub fn substitute(t: &LTerm, db_idx: usize, arg: LTerm) -> Result<LTerm> {
     match t.as_ref() {
         Term::Variable(v, idx) => match idx.get() {
-            // [db_idx → arg]t = arg if idx = db_idx
+            // [j → s]k = s if k = j
             Some(idx) if idx == db_idx => Ok(arg),
-            // [db_idx → arg]t = t otherwise
+            // [j → s]k = k otherwise
             Some(_) => Ok(t.clone()),
             None => Err(anyhow!(
                 "Could not substitute: Variable `{}` is not bound",
                 v
             )),
         },
-        // [db_idx → arg](λ.t1) = λ.[db_idx+1 → ↑¹(arg)]t1
+        // [j → s](λ.t1) = λ.[j+1 → ↑¹(s)]t1
         Term::Abstraction(v, body) => Ok(T![
             abs * v,
             substitute(body, db_idx + 1, shift(arg, 1, 0)?)?
         ]),
-        // [db_idx → arg](t1 t2) = ([db_idx → arg]t1 [db_idx → arg]t2)
+        // [j → s](t1 t2) = ([j → s]t1 [j → s]t2)
         Term::Application(t1, t2) => Ok(T![app
             substitute(t1, db_idx, arg.clone())?,
             substitute(t2, db_idx, arg)?,
@@ -181,7 +194,6 @@ pub fn rm_names(t: &LTerm, env: &Env) -> Result<()> {
         },
         Term::Abstraction(var, body) => {
             let mut env = Env::with_parent(&env);
-            // FIXME: Create a new env for the db_idx calculation
             env.insert_local(*var);
             rm_names(body, &env)
         }
@@ -192,19 +204,36 @@ pub fn rm_names(t: &LTerm, env: &Env) -> Result<()> {
     }
 }
 
+/// The _d_-place shift of a term `t` above cutoff `c`, written here
+/// as ↑[d,c](t), is defined as follows:
+///
+/// ```text
+/// ↑[d,c](k) = k if k < c
+/// ↑[d,c](k) = k + d if k ≥ c
+/// ↑[d,c](λ.t1) = λ.↑[d,c+1]t1
+/// ↑[d,c](t1 t2) = ↑[d,c](t1) ↑[d,c](t2)
+/// ```
 fn shift(t: LTerm, d_place: isize, cutoff: usize) -> Result<LTerm> {
     match t.as_ref() {
         Term::Variable(v, idx) => match idx.get() {
+            // ↑[d,c](k) = k if k < c
             Some(idx) if idx < cutoff => Ok(t),
-            Some(idx) => Ok(T![var * v, (idx as isize + d_place) as usize]),
+            // ↑[d,c](k) = k + d if k ≥ c
+            Some(idx) => {
+                use std::convert::TryFrom;
+                let new_idx = usize::try_from(isize::try_from(idx)? + d_place)?;
+                Ok(T![var(*v), new_idx])
+            }
             None => Err(anyhow!(
                 "Tried to shift a variable with no de Bruijn index, `{}`",
                 v
             )),
         },
+        // ↑[d,c](λ.t1) = λ.↑[d,c+1]t1
         Term::Abstraction(var, body) => {
             Ok(T![abs * var, shift(body.clone(), d_place, cutoff + 1)?])
         }
+        // ↑[d,c](t1 t2) = ↑[d,c](t1) ↑[d,c](t2)
         Term::Application(t1, t2) => {
             let t1 = shift(t1.clone(), d_place, cutoff)?;
             let t2 = shift(t2.clone(), d_place, cutoff)?;
