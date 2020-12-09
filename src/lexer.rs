@@ -28,7 +28,7 @@ pub enum TokenKind {
     #[regex(r"λ|\\")]
     Lambda,
 
-    #[regex(r"[a-zA-Z][a-zA-Z0-9]*")]
+    #[regex(r"[a-zA-Z][a-zA-Z0-9]*'*")]
     Ident,
 
     #[token(".")]

@@ -32,4 +32,3 @@ $ cargo run
 ## TODO
 
 * Allow user defined variables.
-* Implement de Bruijn terms.

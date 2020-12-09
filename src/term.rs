@@ -210,6 +210,40 @@ fn shift(t: LTerm, d_place: isize, cutoff: usize) -> Result<LTerm> {
     }
 }
 
+pub fn term_to_string(t: &LTerm, env: &Env) -> String {
+    match t.as_ref() {
+        Term::Variable(v, idx) => match idx.get().and_then(|i| env.get_from_db_index(i)) {
+            Some(t) => term_to_string(&t, &env),
+            None => v.to_string(),
+        },
+        Term::Abstraction(param, body) => {
+            let (param, env) = new_name(*param, &env);
+            format!("(λ{}.{})", param, term_to_string(body, &env))
+        }
+        Term::Application(t1, t2) => {
+            let t2_paren = matches!(**t2, Term::Application(_, _));
+            let (t2_lp, t2_rp) = if t2_paren { ("(", ")") } else { ("", "") };
+            format!(
+                "{} {}{}{}",
+                term_to_string(t1, &env),
+                t2_lp,
+                term_to_string(t2, &env),
+                t2_rp
+            )
+        }
+    }
+}
+
+fn new_name<'a>(s: impl Into<Symbol>, env: &'a Env) -> (Symbol, Env<'a>) {
+    let mut current_symbol = s.into();
+    while env.get(current_symbol).is_some() {
+        current_symbol = Symbol::from(format!("{}'", current_symbol));
+    }
+    let mut new_env = Env::with_parent(&env);
+    new_env.insert(current_symbol, T![var current_symbol]);
+    (current_symbol, new_env)
+}
+
 impl fmt::Display for Term {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -451,5 +485,27 @@ mod tests {
     }
 
     #[test]
-    fn test_de_bruijn_indices_work() {}
+    fn test_de_bruijn_indices_work() -> Result<()> {
+        let mut env = Env::new();
+        let t = parse("λt.λf.t")?;
+        assert_eq!(term_to_string(&t, &env), "(λt.(λf.t))");
+
+        let t = parse("λx.x x")?;
+        assert_eq!(term_to_string(&t, &env), "(λx.x x)");
+
+        let t = parse("(λx.λy.x y) λx.x")?;
+        rm_names(&t, &env)?;
+        let t = eval(t, &env)?;
+        assert_eq!(term_to_string(&t, &env), "(λy.(λx.x) y)");
+
+        let id = parse("λx.x")?;
+        rm_names(&id, &env)?;
+        env.insert("id", id);
+
+        let t = parse("(λx.λid.id x) λx.id x")?;
+        rm_names(&t, &env)?;
+        let t = eval(t, &env)?;
+        assert_eq!(term_to_string(&t, &env), "(λid'.id' (λx.(λx'.x') x))");
+        Ok(())
+    }
 }
