@@ -59,7 +59,7 @@ pub fn run_repl() -> Result<()> {
 }
 
 fn get_history_file_path() -> Option<PathBuf> {
-    dirs::cache_dir().map(|d| d.with_file_name(".lc_history"))
+    dirs::cache_dir().map(|d| d.join("lc_history"))
 }
 
 fn init_rustyline() -> Editor<()> {
