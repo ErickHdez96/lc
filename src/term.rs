@@ -85,6 +85,7 @@ pub type LTerm = Rc<Term>;
 ///     succ t              Successor
 ///     pred t              Predecessor
 ///     iszero t            zero test
+///     unit                constant unit
 /// ```
 #[derive(Debug, PartialEq, Eq)]
 pub enum Term {
@@ -101,6 +102,7 @@ pub enum Term {
     Succ(LTerm),
     Pred(LTerm),
     IsZero(LTerm),
+    Unit,
 }
 
 /// ```text
@@ -178,7 +180,9 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
                 )),
             }
         }
-        Term::Abstraction(_, _, _) | Term::True | Term::False | Term::Zero => Ok(t.clone()),
+        Term::Abstraction(_, _, _) | Term::True | Term::False | Term::Zero | Term::Unit => {
+            Ok(t.clone())
+        }
         Term::Succ(t) => Ok(T![succ eval_(t, &env)?]),
         Term::Pred(t) => {
             let t = eval_(t, &env)?;
@@ -263,9 +267,7 @@ where
             Term::Application(t1, t2) => {
                 Ok(T![app map(t1, cutoff, on_var)?, map(t2, cutoff, on_var)?])
             }
-            Term::True => Ok(t.clone()),
-            Term::False => Ok(t.clone()),
-            Term::Zero => Ok(t.clone()),
+            Term::True | Term::False | Term::Zero | Term::Unit => Ok(t.clone()),
             Term::Succ(t) => Ok(T![succ map(t, cutoff, on_var)?]),
             Term::Pred(t) => Ok(T![pred map(t, cutoff, on_var)?]),
             Term::IsZero(t) => Ok(T![iszero map(t, cutoff, on_var)?]),
@@ -304,6 +306,7 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
                 t2_rp
             ))
         }
+        Term::Unit => Ok(String::from("unit")),
         Term::True => Ok(String::from("true")),
         Term::False => Ok(String::from("false")),
         Term::Zero => Ok(String::from("0")),
@@ -363,6 +366,9 @@ macro_rules! T {
     };
     (iszero $t:expr) => {
         Rc::new(Term::IsZero($t.clone()))
+    };
+    (unit) => {
+        Rc::new(Term::Unit)
     };
 }
 
@@ -561,5 +567,12 @@ mod tests {
         check_parse("(λx:Nat.iszero pred x) 0", T![true]);
         check_parse("(λx:Nat.iszero pred x) 1", T![true]);
         check_parse("(λx:Nat.iszero pred x) 2", T![false]);
+    }
+
+    #[test]
+    fn test_eval_unit() {
+        check_parse("unit", T![unit]);
+        check_parse("(λx:Nat.unit)3", T![unit]);
+        check_parse("(λx:Unit.true)unit", T![true]);
     }
 }

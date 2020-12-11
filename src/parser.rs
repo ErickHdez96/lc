@@ -77,6 +77,10 @@ impl<'a> Parser<'a> {
         match self.current() {
             TokenKind::Ident if !parse_application => self.parse_ident(env),
             TokenKind::Number if !parse_application => self.parse_number(env),
+            TokenKind::Unit if !parse_application => {
+                self.next();
+                Ok(T![unit])
+            }
             TokenKind::Succ | TokenKind::Pred | TokenKind::IsZero if !parse_application => {
                 let t = self.next().kind;
                 let term = self.parse_term(false, &env)?;
@@ -127,6 +131,7 @@ impl<'a> Parser<'a> {
             | TokenKind::Succ
             | TokenKind::Pred
             | TokenKind::IsZero
+            | TokenKind::Unit
             | TokenKind::Number => self.parse_application_or_var(env),
         }
     }
@@ -212,6 +217,7 @@ impl<'a> Parser<'a> {
             TokenKind::Ident => match self.next().text {
                 "Bool" => Rc::new(Ty::Bool),
                 "Nat" => Rc::new(Ty::Nat),
+                "Unit" => Rc::new(Ty::Unit),
                 text => Rc::new(Ty::Base(text.into())),
             },
             k => return Err(anyhow!("Expected a type, got `{}`", k)),
@@ -388,5 +394,12 @@ mod tests {
             "if iszero pred 0 then false else true",
             T![if T![iszero T![pred T![0]]], T![false], T![true]],
         );
+    }
+
+    #[test]
+    fn test_parse_unit() {
+        check("unit", T![unit]);
+        check("λx:Nat.unit", T![abs "x", TY![nat], T![unit]]);
+        check("λx:Unit.x", T![abs "x", TY![unit], T![var 0]]);
     }
 }

@@ -7,12 +7,16 @@ pub type LTy = Rc<Ty>;
 /// ```text
 /// T ::=
 ///     Bool    type of booleans
+///     Nat     type of natural numbers
+///     A       base type
+///     Unit    unit type
 ///     T → T   type of functions
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ty {
     Bool,
     Nat,
+    Unit,
     Base(Symbol),
     Abstraction(LTy, LTy),
 }
@@ -29,6 +33,7 @@ impl fmt::Display for Ty {
             Self::Bool => write!(f, "Bool"),
             Self::Nat => write!(f, "Nat"),
             Self::Base(s) => s.fmt(f),
+            Self::Unit => write!(f, "Unit"),
             Self::Abstraction(t1, t2) => {
                 let (l_paren, r_paren) = if t1.is_abstraction() {
                     ("(", ")")
@@ -46,6 +51,7 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
         Term::True => Ok(TY![bool]),
         Term::False => Ok(TY![bool]),
         Term::Zero => Ok(TY![nat]),
+        Term::Unit => Ok(TY![unit]),
         Term::Succ(t) | Term::Pred(t) => match type_of(t, &env)?.as_ref() {
             Ty::Nat => Ok(TY![nat]),
             t => Err(anyhow!("Expected type Nat, got `{}`", t)),
@@ -71,7 +77,7 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
                     if t11_ty == &t2_ty {
                         Ok(t12_ty.clone())
                     } else {
-                        Err(anyhow!("Expected type `{}`, got `{}`", t11_ty, t2_ty))
+                        Err(anyhow!("Expected type {}, got `{}`", t11_ty, t2_ty))
                     }
                 }
                 _ => Err(anyhow!("Expected an abstraction, got `{}`", t1_ty)),
@@ -104,6 +110,9 @@ macro_rules! TY {
     };
     (nat) => {
         Rc::new(Ty::Nat)
+    };
+    (unit) => {
+        Rc::new(Ty::Unit)
     };
     (base $s:expr) => {
         Rc::new(Ty::Base($s.into()))
@@ -175,7 +184,7 @@ mod tests {
             type_of(&parsed, &env)
                 .expect_err("Expected a typechecking error")
                 .to_string(),
-            "Expected type `Bool`, got `Bool → Bool`",
+            "Expected type Bool, got `Bool → Bool`",
         );
 
         let parsed = parse("true λx:Bool.x", &env)?;
@@ -255,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn test_typecheck_nat() -> Result<()> {
+    fn test_typecheck_nat() {
         check_parse("0", TY![nat]);
         check_parse("5", TY![nat]);
         check_parse("pred 0", TY![nat]);
@@ -269,12 +278,10 @@ mod tests {
         // is_greater_than_one
         check_parse("λx:Nat.iszero pred x", TY![abs TY![nat], TY![bool]]);
         check_parse("(λx:Nat.iszero pred x) 0", TY![bool]);
-
-        Ok(())
     }
 
     #[test]
-    fn error_typecheck_nat() -> Result<()> {
+    fn error_typecheck_nat() {
         check_parse_error("pred true", "Expected type Nat, got `Bool`");
         check_parse_error("succ true", "Expected type Nat, got `Bool`");
         check_parse_error(
@@ -292,7 +299,19 @@ mod tests {
             "if iszero pred succ 0 then true else 0",
             "Arms of conditional have different types: `Bool`, and `Nat`",
         );
+    }
 
-        Ok(())
+    #[test]
+    fn test_typecheck_unit() {
+        check_parse("unit", TY![unit]);
+        check_parse("λx:Unit.x", TY![abs TY![unit], TY![unit]]);
+        check_parse("λx:Nat.unit", TY![abs TY![nat], TY![unit]]);
+        check_parse("(λ_:Unit.unit)unit", TY![unit]);
+    }
+
+    #[test]
+    fn error_typecheck_unit() {
+        check_parse_error("iszero unit", "Expected type Nat, got `Unit`");
+        check_parse_error("(λx:Nat.unit) unit", "Expected type Nat, got `Unit`");
     }
 }

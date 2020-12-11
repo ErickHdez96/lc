@@ -1,5 +1,6 @@
 ```
 U+22A2 = ⊢
+U+2209 = ∉
 
 U+21A6 = ↦
 
@@ -56,12 +57,14 @@ t ::=                   terms:
     succ t                      successor
     pred t                      predecessor
     iszero t                    zero test
+    unit                        constant unit
 
 v ::=                   values:
     λx:T.t                      abstraction value
     true                        true value
     false                       false value
-    nv
+    nv                          numeric value
+    unit                        constant unit
 
 nv ::=                  numeric values:
     0                           zero value
@@ -149,6 +152,18 @@ pred t₁ : Nat
 ----------------                        T-IsZero
 iszero t₁ : Bool
 
+Γ ⊢ unit: Unit                          T-Unit
+```
+
+## Derived forms
+
+```
+       def
+t₁;t₂   =       (λx:Unit.t₂)t₁
+                where x ∉ FV(t₂)
+```
+
+```
 Logic                           Programming
 ------------------------------------------------------------------
 propositions                    types
