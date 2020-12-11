@@ -146,6 +146,9 @@ mod tests {
         check(" ", vec![]);
         check("λ", vec![Lambda]);
         check(r"\", vec![Lambda]);
+        check("→", vec![Arrow]);
+        check("->", vec![Arrow]);
+        check("_", vec![Wildcard]);
         check("x", vec![Ident]);
         check("true", vec![True]);
         check("false", vec![False]);

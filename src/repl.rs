@@ -1,6 +1,6 @@
 use anyhow::Result;
-use lc::term::term_to_string;
 use lc::{env::base_env, parser::parse, term::eval};
+use lc::{term::term_to_string, types::type_of};
 use log::{error, warn};
 use rustyline::{error::ReadlineError, Editor};
 use std::path::PathBuf;
@@ -27,9 +27,9 @@ pub fn run_repl() -> Result<()> {
                     rl.add_history_entry(line);
                     match parse(line, &env)
                         .and_then(|p| eval(&p, &env))
-                        .and_then(|p| term_to_string(&p, &env))
+                        .and_then(|p| Ok((term_to_string(&p, &env)?, type_of(&p, &env)?)))
                     {
-                        Ok(parsed) => println!("{}", parsed),
+                        Ok((term, ty)) => println!("{} : {}", term, ty),
                         Err(e) => eprintln!("{}", e),
                     }
                 }

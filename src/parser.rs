@@ -187,7 +187,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident => match self.next().text {
                 "Bool" => Rc::new(Ty::Bool),
-                text => return Err(anyhow!("Type {} does not exist", text)),
+                text => Rc::new(Ty::Base(text.into())),
             },
             k => return Err(anyhow!("Expected a type, got `{}`", k)),
         };
@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_variable() -> Result<()> {
+    fn test_parse_variable() -> Result<()> {
         let mut env = Env::new();
         let id = parse("λx:Bool.x", &env)?;
         env.insert_variable("id", id, TY![abs TY![bool], TY![bool]]);
@@ -233,20 +233,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_abstraction() {
+    fn test_parse_abstraction() {
         check("λx:Bool.x", T![abs "x", TY![bool], T![var 0]]);
         check(r"\x:Bool.x", T![abs "x", TY![bool], T![var 0]]);
-        check(r"λx:Bool.λ_:Bool.x", T![abs "x", TY![bool], T![abs "_", TY![bool], T![var 1]]]);
+        check(
+            r"λx:Bool.λ_:Bool.x",
+            T![abs "x", TY![bool], T![abs "_", TY![bool], T![var 1]]],
+        );
     }
 
     #[test]
-    fn parse_application() {
+    fn test_parse_application() {
         let x = T![var 0];
         check("λx:Bool.x x", T![abs "x", TY![bool], T![app x, x]]);
     }
 
     #[test]
-    fn parse_parenthesis() {
+    fn test_parse_parenthesis() {
         let x = T![var 0];
         let y = T![var 0];
         check(
@@ -276,19 +279,19 @@ mod tests {
 
     /// A single term inside parentheses should parse to the term inside.
     #[test]
-    fn test_single_term_inside_parentheses() -> Result<()> {
+    fn test_parse_single_term_inside_parentheses() -> Result<()> {
         let env = base_env();
         assert_eq!(parse("(λx:Bool.x)", &env)?, parse("λx:Bool.x", &env)?);
         Ok(())
     }
 
     #[test]
-    fn test_paren_type() {
+    fn test_pparse_aren_type() {
         check("λx:(Bool).x", T![abs "x", TY![bool], T![var 0]]);
     }
 
     #[test]
-    fn test_arrow_types() {
+    fn test_parse_arrow_types() {
         // Bool → Bool
         let b_b_ty = TY![abs TY![bool], TY![bool]];
         check(
@@ -312,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn test_if() -> Result<()> {
+    fn test_parse_if() -> Result<()> {
         let env = Env::new();
         let bool_id = parse("λx:Bool.x", &env)?;
 
@@ -332,5 +335,14 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_parse_base_type() {
+        check("λx:A.x", T![abs "x", TY![base "A"], T![var 0]]);
+        check(
+            "λx:A → A.x",
+            T![abs "x", TY![abs TY![base "A"], TY![base "A"]], T![var 0]],
+        );
     }
 }

@@ -1,4 +1,4 @@
-use crate::{Env, LTerm, Term, TY};
+use crate::{Env, LTerm, Symbol, Term, TY};
 use anyhow::{anyhow, Result};
 use std::{fmt, rc::Rc};
 
@@ -7,6 +7,7 @@ pub type LTy = Rc<Ty>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ty {
     Bool,
+    Base(Symbol),
     Abstraction(LTy, LTy),
 }
 
@@ -20,6 +21,7 @@ impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bool => write!(f, "Bool"),
+            Self::Base(s) => s.fmt(f),
             Self::Abstraction(t1, t2) => {
                 let (l_paren, r_paren) = if t1.is_abstraction() {
                     ("(", ")")
@@ -83,6 +85,9 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
 macro_rules! TY {
     (bool) => {
         Rc::new(Ty::Bool)
+    };
+    (base $s:expr) => {
+        Rc::new(Ty::Base($s.into()))
     };
     (abs $t1:expr, $t2:expr) => {
         Rc::new(Ty::Abstraction($t1.clone(), $t2.clone()))
@@ -193,5 +198,30 @@ mod tests {
 
         let ty = TY![abs TY![abs TY![bool], TY![bool]], TY![bool]];
         assert_eq!(ty.to_string(), "(Bool → Bool) → Bool");
+    }
+
+    #[test]
+    fn test_typecheck_base_types() -> Result<()> {
+        let env = Env::new();
+
+        let parsed = parse("λx:A.x", &env)?;
+        assert_eq!(
+            type_of(&parsed, &env).expect("Couldn't type check"),
+            TY![abs TY![base "A"], TY![base "A"]],
+        );
+
+        let parsed = parse("λx:B.x", &env)?;
+        assert_eq!(
+            type_of(&parsed, &env).expect("Couldn't type check"),
+            TY![abs TY![base "B"], TY![base "B"]],
+        );
+
+        let parsed = parse("λf:A → A.λx:A. f(f(x))", &env)?;
+        assert_eq!(
+            type_of(&parsed, &env).expect("Couldn't type check"),
+            TY![abs TY![abs TY![base "A"], TY![base "A"]], TY![abs TY![base "A"], TY![base "A"]]],
+        );
+
+        Ok(())
     }
 }
