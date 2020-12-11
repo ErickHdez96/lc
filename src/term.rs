@@ -1,4 +1,6 @@
 use crate::types::LTy;
+use crate::Error;
+use crate::ErrorKind;
 use crate::Symbol;
 use crate::T;
 /// Evaluation strategies:
@@ -67,11 +69,19 @@ use crate::T;
 ///
 /// Here call by value is used.
 use crate::{env::Env, types::type_of};
-use anyhow::{anyhow, Result};
 use std::convert::TryFrom;
 use std::rc::Rc;
 
-pub type LTerm = Rc<Term>;
+type Result<T> = std::result::Result<T, Error>;
+
+macro_rules! error {
+    ($msg:expr, $($arg:expr),*) => {
+        Error::new(format!($msg, $($arg),*), ErrorKind::Runtime)
+    };
+    ($msg:expr) => {
+        error!($msg,)
+    };
+}
 
 /// ```text
 /// terms:
@@ -104,6 +114,8 @@ pub enum Term {
     IsZero(LTerm),
     Unit,
 }
+
+pub type LTerm = Rc<Term>;
 
 /// ```text
 /// t ::=                           Terms:
@@ -158,7 +170,7 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
                     let evaluation = eval_(&shifted, &env)?;
                     Ok(evaluation)
                 }
-                _ => Err(anyhow!(
+                _ => Err(error!(
                     "Expected an abstraction, got {}",
                     term_to_string(t1, &env)?
                 )),
@@ -166,7 +178,7 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
         }
         Term::Variable(idx) => env
             .get_from_db_index(*idx)
-            .ok_or_else(|| anyhow!("Invalid de Bruijn index: {}", idx)),
+            .ok_or_else(|| error!("Invalid de Bruijn index: {}", idx)),
         // Evaluating an abstraction, yields the abstraction itself.
         Term::If(cond, then, else_b) => {
             let cond = eval_(cond, &env)?;
@@ -174,7 +186,7 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
             match cond.as_ref() {
                 Term::True => eval_(then, &env),
                 Term::False => eval_(else_b, &env),
-                _ => Err(anyhow!(
+                _ => Err(error!(
                     "Expected a boolean, got `{}`",
                     term_to_string(&cond, &env)?
                 )),
@@ -189,7 +201,7 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
             match t.as_ref() {
                 Term::Zero => Ok(T![0]),
                 Term::Succ(t) => Ok(t.clone()),
-                _ => Err(anyhow!(
+                _ => Err(error!(
                     "Expected a numeric value, got `{}`",
                     term_to_string(&t, &env)?
                 )),
@@ -200,7 +212,7 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
             match t.as_ref() {
                 Term::Zero => Ok(T![true]),
                 Term::Succ(_) => Ok(T![false]),
-                _ => Err(anyhow!(
+                _ => Err(error!(
                     "Expected a numeric value, got `{}`",
                     term_to_string(&t, &env)?
                 )),
@@ -221,7 +233,10 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
 fn substitute(t: &LTerm, db_idx: usize, arg: LTerm) -> Result<LTerm> {
     term_map(t, 0, |idx, c| {
         if idx == c + db_idx {
-            shift(&arg, isize::try_from(c)?)
+            shift(
+                &arg,
+                isize::try_from(c).map_err(|_| error!("Too many bindings"))?,
+            )
         } else {
             Ok(T![var idx])
         }
@@ -240,7 +255,9 @@ fn substitute(t: &LTerm, db_idx: usize, arg: LTerm) -> Result<LTerm> {
 fn shift_above(t: &LTerm, d_place: isize, cutoff: usize) -> Result<LTerm> {
     term_map(t, cutoff, |idx, c| {
         Ok(if idx >= c {
-            let new_idx = usize::try_from(isize::try_from(idx)? + d_place)?;
+            let idx = isize::try_from(idx).map_err(|_| error!("Too many bindings"))? + d_place;
+            let new_idx = usize::try_from(idx)
+                .map_err(|_| error!("Invalid negative de Bruijn index calculated"))?;
             T![var new_idx]
         } else {
             T![var idx]
@@ -285,7 +302,7 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
     match t.as_ref() {
         Term::Variable(idx) => match env.get_name_from_db_index(*idx) {
             Some(v) => Ok(v.to_string()),
-            None => Err(anyhow!("Invalid de Bruijn index: {}", *idx)),
+            None => Err(error!("Invalid de Bruijn index: {}", *idx)),
         },
         Term::Abstraction(param, ty, body) => {
             let (param, env) = new_name(*param, ty, &env);

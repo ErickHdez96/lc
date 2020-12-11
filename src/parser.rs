@@ -6,10 +6,20 @@ use crate::{
 };
 use crate::{
     term::{LTerm, Term},
-    TY,
+    Error, ErrorKind, TY,
 };
-use anyhow::{anyhow, Result};
 use std::rc::Rc;
+
+type Result<T> = std::result::Result<T, Error>;
+
+macro_rules! error {
+    ($msg:expr, $($arg:expr),*) => {
+        Error::new(format!($msg, $($arg),*), ErrorKind::Parser)
+    };
+    ($msg:expr) => {
+        error!($msg,)
+    };
+}
 
 pub fn parse(input: &str, env: &Env<'static>) -> Result<LTerm> {
     let tokens = tokenize(input);
@@ -32,7 +42,7 @@ impl<'a> Parser<'a> {
         let parsed = self.parse_term(true, env)?;
 
         match self.next() {
-            t if t.kind != TokenKind::Eof => Err(anyhow!("Expected <eof>, got `{}`", t.text)),
+            t if t.kind != TokenKind::Eof => Err(error!("Expected <eof>, got `{}`", t.text)),
             _ => Ok(parsed),
         }
     }
@@ -69,7 +79,7 @@ impl<'a> Parser<'a> {
         if self.current() == kind {
             Ok(self.next())
         } else {
-            Err(anyhow!("Expected a `{}`, got {}", kind, self.next_text()))
+            Err(error!("Expected a `{}`, got {}", kind, self.next_text()))
         }
     }
 
@@ -98,7 +108,7 @@ impl<'a> Parser<'a> {
                 Ok(term)
             }
             TokenKind::LParen => self.parse_application_or_var(env),
-            TokenKind::Eof => Err(anyhow!("Expected a term, got <eof>")),
+            TokenKind::Eof => Err(error!("Expected a term, got <eof>")),
             TokenKind::RParen
             | TokenKind::Error
             | TokenKind::Period
@@ -107,7 +117,7 @@ impl<'a> Parser<'a> {
             | TokenKind::Else
             | TokenKind::Colon
             | TokenKind::Arrow
-            | TokenKind::Wildcard => Err(anyhow!("Expected a term, got `{}`", self.next().text)),
+            | TokenKind::Wildcard => Err(error!("Expected a term, got `{}`", self.next().text)),
             TokenKind::True if !parse_application => {
                 self.bump();
                 Ok(T![true])
@@ -163,7 +173,7 @@ impl<'a> Parser<'a> {
             .next()
             .text
             .parse::<u64>()
-            .map_err(|_| anyhow!("Number too large"))?;
+            .map_err(|_| error!("Number too large"))?;
 
         let mut number = T![0];
         for _ in 0..n {
@@ -184,7 +194,7 @@ impl<'a> Parser<'a> {
 
     fn lookup_ident(&self, s: Symbol, env: &Env) -> Result<usize> {
         env.get_db_index(s)
-            .ok_or_else(|| anyhow!("Variable `{}` not bound", s))
+            .ok_or_else(|| error!("Variable `{}` not bound", s))
     }
 
     fn eat_ident(&mut self, accept_wildcard: bool) -> Result<Symbol> {
@@ -220,7 +230,7 @@ impl<'a> Parser<'a> {
                 "Unit" => Rc::new(Ty::Unit),
                 text => Rc::new(Ty::Base(text.into())),
             },
-            k => return Err(anyhow!("Expected a type, got `{}`", k)),
+            k => return Err(error!("Expected a type, got `{}`", k)),
         };
 
         if self.current() == TokenKind::Arrow {
@@ -250,7 +260,7 @@ mod tests {
             parse(input, &Env::new())
                 .expect_err("Shouldn't parse correctly")
                 .to_string(),
-            expected,
+            format!("ParserError: {}", expected),
         );
     }
 

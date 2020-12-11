@@ -1,10 +1,11 @@
-use crate::term::LTerm;
 use crate::types::LTy;
 use crate::Symbol;
-use anyhow::Result;
+use crate::{term::LTerm, Error};
 use log::error;
 use std::collections::HashMap;
 use std::default;
+
+type Result<T> = std::result::Result<T, Error>;
 
 /// Terms are stored along with their calculated de Bruijn index
 #[derive(Debug)]

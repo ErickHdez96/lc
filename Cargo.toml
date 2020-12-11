@@ -9,7 +9,6 @@ edition = "2018"
 [dependencies]
 string-interner = { git = "https://github.com/ErickHdez96/string-interner.git" }
 logos = "0.11"
-anyhow = "1"
 rustyline = "7.0.0"
 dirs = "3.0.1"
 log = "0.4"

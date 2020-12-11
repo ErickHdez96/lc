@@ -1,11 +1,10 @@
-use anyhow::Result;
 use lc::{env::base_env, parser::parse, term::eval};
 use lc::{term::term_to_string, types::type_of};
 use log::{error, warn};
 use rustyline::{error::ReadlineError, Editor};
 use std::path::PathBuf;
 
-pub fn run_repl() -> Result<()> {
+pub fn run_repl() {
     env_logger::init();
     let mut rl = init_rustyline();
     println!("Hello! Welcome to the lambda calculus evaluator");
@@ -54,8 +53,6 @@ pub fn run_repl() -> Result<()> {
         }
         None => warn!("Failed to save repl history"),
     }
-
-    Ok(())
 }
 
 fn get_history_file_path() -> Option<PathBuf> {

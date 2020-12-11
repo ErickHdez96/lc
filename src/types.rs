@@ -1,8 +1,16 @@
-use crate::{Env, LTerm, Symbol, Term, TY};
-use anyhow::{anyhow, Result};
+use crate::{Env, Error, ErrorKind, LTerm, Symbol, Term, TY};
 use std::{fmt, rc::Rc};
 
-pub type LTy = Rc<Ty>;
+type Result<T> = std::result::Result<T, Error>;
+
+macro_rules! error {
+    ($msg:expr, $($arg:expr),*) => {
+        Error::new(format!($msg, $($arg),+), ErrorKind::Type)
+    };
+    ($msg:expr) => {
+        error!($msg,)
+    };
+}
 
 /// ```text
 /// T ::=
@@ -20,6 +28,8 @@ pub enum Ty {
     Base(Symbol),
     Abstraction(LTy, LTy),
 }
+
+pub type LTy = Rc<Ty>;
 
 impl Ty {
     pub fn is_abstraction(&self) -> bool {
@@ -54,11 +64,11 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
         Term::Unit => Ok(TY![unit]),
         Term::Succ(t) | Term::Pred(t) => match type_of(t, &env)?.as_ref() {
             Ty::Nat => Ok(TY![nat]),
-            t => Err(anyhow!("Expected type Nat, got `{}`", t)),
+            t => Err(error!("Expected type Nat, got `{}`", t)),
         },
         Term::IsZero(t) => match type_of(t, &env)?.as_ref() {
             Ty::Nat => Ok(TY![bool]),
-            t => Err(anyhow!("Expected type Nat, got `{}`", t)),
+            t => Err(error!("Expected type Nat, got `{}`", t)),
         },
         Term::Abstraction(v, ty, body) => {
             let mut env = Env::with_parent(&env);
@@ -67,7 +77,7 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
         }
         Term::Variable(idx) => env
             .get_type(*idx)
-            .ok_or_else(|| anyhow!("Invalid de Bruijn index {}", idx)),
+            .ok_or_else(|| error!("Invalid de Bruijn index {}", idx)),
         Term::Application(t1, t2) => {
             let t1_ty = type_of(t1, &env)?;
             let t2_ty = type_of(t2, &env)?;
@@ -77,10 +87,10 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
                     if t11_ty == &t2_ty {
                         Ok(t12_ty.clone())
                     } else {
-                        Err(anyhow!("Expected type {}, got `{}`", t11_ty, t2_ty))
+                        Err(error!("Expected type {}, got `{}`", t11_ty, t2_ty))
                     }
                 }
-                _ => Err(anyhow!("Expected an abstraction, got `{}`", t1_ty)),
+                _ => Err(error!("Expected an abstraction, got `{}`", t1_ty)),
             }
         }
         Term::If(cond, then, else_b) => match type_of(cond, &env)?.as_ref() {
@@ -91,14 +101,13 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
                 if then_ty == else_ty {
                     Ok(else_ty)
                 } else {
-                    Err(anyhow!(
+                    Err(error!(
                         "Arms of conditional have different types: `{}`, and `{}`",
-                        then_ty,
-                        else_ty
+                        then_ty, else_ty
                     ))
                 }
             }
-            ty => Err(anyhow!("Guard conditional expects a Bool, got `{}`", ty)),
+            ty => Err(error!("Guard conditional expects a Bool, got `{}`", ty)),
         },
     }
 }
@@ -140,9 +149,9 @@ mod tests {
         let env = Env::new();
         assert_eq!(
             type_of(&parse(input, &env).expect("Couldn't parse"), &env)
-                .expect_err("Couldn't type check")
+                .expect_err("Shouldn't type check correctly")
                 .to_string(),
-            expected
+            format!("TypeError: {}", expected),
         );
     }
 
@@ -177,55 +186,28 @@ mod tests {
     }
 
     #[test]
-    fn test_wrong_application_types() -> Result<()> {
-        let env = Env::new();
-        let parsed = parse("(λx:Bool.x)(λx:Bool.x)", &env)?;
-        assert_eq!(
-            type_of(&parsed, &env)
-                .expect_err("Expected a typechecking error")
-                .to_string(),
+    fn test_wrong_application_types() {
+        check_parse_error(
+            "(λx:Bool.x)(λx:Bool.x)",
             "Expected type Bool, got `Bool → Bool`",
         );
-
-        let parsed = parse("true λx:Bool.x", &env)?;
-        assert_eq!(
-            type_of(&parsed, &env)
-                .expect_err("Expected a typechecking error")
-                .to_string(),
+        check_parse_error("true λx:Bool.x", "Expected an abstraction, got `Bool`");
+        check_parse_error(
+            "λf:Bool → Bool.λx:Bool.x f",
             "Expected an abstraction, got `Bool`",
         );
-
-        let parsed = parse("λf:Bool → Bool.λx:Bool.x f", &env)?;
-        assert_eq!(
-            type_of(&parsed, &env)
-                .expect_err("Expected a typechecking error")
-                .to_string(),
-            "Expected an abstraction, got `Bool`",
-        );
-
-        Ok(())
     }
 
     #[test]
-    fn test_wrong_if_types() -> Result<()> {
-        let env = Env::new();
-        let parsed = parse("if λx:Bool.x then true else false", &env)?;
-        assert_eq!(
-            type_of(&parsed, &env)
-                .expect_err("Expected a typechecking error")
-                .to_string(),
+    fn test_wrong_if_types() {
+        check_parse_error(
+            "if λx:Bool.x then true else false",
             "Guard conditional expects a Bool, got `Bool → Bool`",
         );
-
-        let parsed = parse("if true then true else λx:Bool.x", &env)?;
-        assert_eq!(
-            type_of(&parsed, &env)
-                .expect_err("Expected a typechecking error")
-                .to_string(),
+        check_parse_error(
+            "if true then true else λx:Bool.x",
             "Arms of conditional have different types: `Bool`, and `Bool → Bool`",
         );
-
-        Ok(())
     }
 
     #[test]
@@ -239,28 +221,13 @@ mod tests {
     }
 
     #[test]
-    fn test_typecheck_base_types() -> Result<()> {
-        let env = Env::new();
-
-        let parsed = parse("λx:A.x", &env)?;
-        assert_eq!(
-            type_of(&parsed, &env).expect("Couldn't type check"),
-            TY![abs TY![base "A"], TY![base "A"]],
-        );
-
-        let parsed = parse("λx:B.x", &env)?;
-        assert_eq!(
-            type_of(&parsed, &env).expect("Couldn't type check"),
-            TY![abs TY![base "B"], TY![base "B"]],
-        );
-
-        let parsed = parse("λf:A → A.λx:A. f(f(x))", &env)?;
-        assert_eq!(
-            type_of(&parsed, &env).expect("Couldn't type check"),
+    fn test_typecheck_base_types() {
+        check_parse("λx:A.x", TY![abs TY![base "A"], TY![base "A"]]);
+        check_parse("λx:B.x", TY![abs TY![base "B"], TY![base "B"]]);
+        check_parse(
+            "λf:A → A.λx:A. f(f(x))",
             TY![abs TY![abs TY![base "A"], TY![base "A"]], TY![abs TY![base "A"], TY![base "A"]]],
         );
-
-        Ok(())
     }
 
     #[test]
