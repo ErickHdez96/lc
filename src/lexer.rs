@@ -28,6 +28,21 @@ pub enum TokenKind {
     #[regex(r"λ|\\")]
     Lambda,
 
+    #[token("true")]
+    True,
+
+    #[token("false")]
+    False,
+
+    #[token("if")]
+    If,
+
+    #[token("then")]
+    Then,
+
+    #[token("else")]
+    Else,
+
     #[regex(r"[a-zA-Z][a-zA-Z0-9]*'*")]
     Ident,
 
@@ -40,10 +55,33 @@ pub enum TokenKind {
     #[token(")")]
     RParen,
 
+    #[token(":")]
+    Colon,
+
+    #[regex("(→|->)")]
+    Arrow,
+
+    #[regex("_")]
+    Wildcard,
+
     #[error]
     Error,
 
     Eof,
+}
+
+impl TokenKind {
+    pub fn can_start_term(self) -> bool {
+        matches!(
+            self,
+            TokenKind::Lambda
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::If
+                | TokenKind::Ident
+                | TokenKind::LParen
+        )
+    }
 }
 
 impl std::fmt::Display for TokenKind {
@@ -55,10 +93,18 @@ impl std::fmt::Display for TokenKind {
             match self {
                 Whitespace => "<whitespace>",
                 Lambda => "λ",
+                True => "true",
+                False => "false",
+                If => "if",
+                Then => "then",
+                Else => "else",
                 Ident => "<ident>",
                 Period => ".",
                 LParen => "(",
                 RParen => ")",
+                Colon => ":",
+                Arrow => "→",
+                Wildcard => "_",
                 Error => "<unknown char>",
                 Eof => "<eof>",
             }
@@ -101,10 +147,15 @@ mod tests {
         check("λ", vec![Lambda]);
         check(r"\", vec![Lambda]);
         check("x", vec![Ident]);
-        check("true", vec![Ident]);
+        check("true", vec![True]);
+        check("false", vec![False]);
+        check("if", vec![If]);
+        check("then", vec![Then]);
+        check("else", vec![Else]);
         check(".", vec![Period]);
         check("(", vec![LParen]);
         check(")", vec![RParen]);
+        check(":", vec![Colon]);
         check(
             "(λx.x) y",
             vec![LParen, Lambda, Ident, Period, Ident, RParen, Ident],

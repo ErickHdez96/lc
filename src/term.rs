@@ -1,3 +1,6 @@
+use crate::types::LTy;
+use crate::Symbol;
+use crate::T;
 /// Evaluation strategies:
 ///
 /// Given the following expression:
@@ -63,23 +66,38 @@
 /// arguments that are actually used.
 ///
 /// Here call by value is used.
-use crate::env::Env;
-use crate::Symbol;
-use crate::T;
+use crate::{env::Env, types::type_of};
 use anyhow::{anyhow, Result};
-use std::rc::Rc;
 use std::convert::TryFrom;
+use std::rc::Rc;
 
 pub type LTerm = Rc<Term>;
 
+/// ```text
+/// terms:
+///     x                   Variable
+///     λx:T.t              Abstraction
+///     t t                 Application
+///     true                Constant true
+///     false               Constant false
+///     if t then t else t  If
+/// ```
 #[derive(Debug, PartialEq, Eq)]
 pub enum Term {
     /// x
     Variable(/** de Bruijn index */ usize),
     /// λx.t
-    Abstraction(/** Original name of the parameter */ Symbol, LTerm),
+    Abstraction(/** Original name of the parameter */ Symbol, LTy, LTerm),
     /// t t
     Application(LTerm, LTerm),
+    True,
+    False,
+    If(LTerm, LTerm, LTerm),
+}
+
+pub fn eval(t: &LTerm, env: &Env) -> Result<LTerm> {
+    type_of(&t, &env)?;
+    eval_(&t, env)
 }
 
 /// ```text
@@ -101,7 +119,7 @@ pub enum Term {
 ///
 /// (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)    (E-AppAbs)
 /// ```
-pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
+pub fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
     match t.as_ref() {
         Term::Application(t1, t2) => {
             //    t1 → t1'
@@ -109,25 +127,25 @@ pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
             // t1 t2 → t1' t2
             // If t1 can be evaluated, it is evaluated first
             // E-App1
-            let v1 = eval(t1.clone(), env)?;
+            let v1 = eval_(t1, env)?;
             //    t2 → t2'
             // --------------
             // v1 t2 → v1' t2'
             // Once t1 is a value which can no longer be evaluated
             // We evaluate t2
             // E-App2
-            let v2 = eval(t2.clone(), env)?;
+            let v2 = eval_(t2, env)?;
             match v1.as_ref() {
                 // E-AppAbs
                 // (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)
-                Term::Abstraction(_, body) => {
+                Term::Abstraction(_, _, body) => {
                     // s_v2 = ↑¹(v2)
                     let shifted_v2 = shift(&v2, 1)?;
                     // sub = [0 → s_v2]t12
                     let substitution = substitute(body, 0, shifted_v2)?;
                     // shi = ↑⁻¹sub
                     let shifted = shift(&substitution, -1)?;
-                    let evaluation = eval(shifted, &env)?;
+                    let evaluation = eval_(&shifted, &env)?;
                     Ok(evaluation)
                 }
                 _ => Err(anyhow!(
@@ -140,7 +158,19 @@ pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
             .get_from_db_index(*idx)
             .ok_or_else(|| anyhow!("Invalid de Bruijn index: {}", idx)),
         // Evaluating an abstraction, yields the abstraction itself.
-        _ => Ok(t),
+        Term::If(cond, then, else_b) => {
+            let cond = eval_(cond, &env)?;
+
+            match cond.as_ref() {
+                Term::True => eval_(then, &env),
+                Term::False => eval_(else_b, &env),
+                _ => Err(anyhow!(
+                    "Expected a boolean, got `{}`",
+                    term_to_string(&cond, &env)?
+                )),
+            }
+        }
+        _ => Ok(t.clone()),
     }
 }
 
@@ -154,7 +184,13 @@ pub fn eval(t: LTerm, env: &Env) -> Result<LTerm> {
 /// [j → s](t1 t2) = ([j → s]t1 [j → s]t2)
 /// ```
 fn substitute(t: &LTerm, db_idx: usize, arg: LTerm) -> Result<LTerm> {
-    term_map(t, 0, |idx, c| if idx == c + db_idx { shift(&arg, isize::try_from(c)?) } else { Ok(T![var idx]) })
+    term_map(t, 0, |idx, c| {
+        if idx == c + db_idx {
+            shift(&arg, isize::try_from(c)?)
+        } else {
+            Ok(T![var idx])
+        }
+    })
 }
 
 /// The _d_-place shift of a term `t` above cutoff `c`, written here
@@ -171,7 +207,9 @@ fn shift_above(t: &LTerm, d_place: isize, cutoff: usize) -> Result<LTerm> {
         Ok(if idx >= c {
             let new_idx = usize::try_from(isize::try_from(idx)? + d_place)?;
             T![var new_idx]
-        } else { T![var idx] })
+        } else {
+            T![var idx]
+        })
     })
 }
 
@@ -181,13 +219,26 @@ fn shift(t: &LTerm, d_place: isize) -> Result<LTerm> {
 
 fn term_map<F>(t: &LTerm, cutoff: usize, on_var: F) -> Result<LTerm>
 where
-    F: Fn(usize, usize) -> Result<LTerm>
+    F: Fn(usize, usize) -> Result<LTerm>,
 {
-    fn map<F: Fn(usize, usize) -> Result<LTerm>>(t: &LTerm, cutoff: usize, on_var: &F) -> Result<LTerm> {
+    fn map<F: Fn(usize, usize) -> Result<LTerm>>(
+        t: &LTerm,
+        cutoff: usize,
+        on_var: &F,
+    ) -> Result<LTerm> {
         match t.as_ref() {
             Term::Variable(idx) => on_var(*idx, cutoff),
-            Term::Abstraction(v, body) => Ok(T![abs (*v), map(body, cutoff + 1, on_var)?]),
-            Term::Application(t1, t2) => Ok(T![app map(t1, cutoff, on_var)?, map(t2, cutoff, on_var)?]),
+            Term::Abstraction(v, ty, body) => Ok(T![abs(*v), ty, map(body, cutoff + 1, on_var)?]),
+            Term::Application(t1, t2) => {
+                Ok(T![app map(t1, cutoff, on_var)?, map(t2, cutoff, on_var)?])
+            }
+            Term::True => Ok(t.clone()),
+            Term::False => Ok(t.clone()),
+            Term::If(cond, then, else_b) => Ok(T![if
+                                               map(cond, cutoff, on_var)?,
+                                               map(then, cutoff, on_var)?,
+                                               map(else_b, cutoff, on_var)?,
+            ]),
         }
     }
     map(t, cutoff, &on_var)
@@ -199,12 +250,12 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
             Some(v) => Ok(v.to_string()),
             None => Err(anyhow!("Invalid de Bruijn index: {}", *idx)),
         },
-        Term::Abstraction(param, body) => {
-            let (param, env) = new_name(*param, &env);
-            Ok(format!("λ{}.{}", param, term_to_string(body, &env)?))
+        Term::Abstraction(param, ty, body) => {
+            let (param, env) = new_name(*param, ty, &env);
+            Ok(format!("λ{}:{}.{}", param, ty, term_to_string(body, &env)?))
         }
         Term::Application(t1, t2) => {
-            let t1_paren = matches!(**t1, Term::Abstraction(_, _));
+            let t1_paren = matches!(**t1, Term::Abstraction(_, _, _));
             let t2_paren = matches!(**t2, Term::Application(_, _));
             let (t2_lp, t2_rp) = if t2_paren { ("(", ")") } else { ("", "") };
             let (t1_lp, t1_rp) = if t1_paren { ("(", ")") } else { ("", "") };
@@ -218,16 +269,24 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
                 t2_rp
             ))
         }
+        Term::True => Ok(String::from("true")),
+        Term::False => Ok(String::from("false")),
+        Term::If(c, t, e) => Ok(format!(
+            "if {} then {} else {}",
+            term_to_string(c, &env)?,
+            term_to_string(t, &env)?,
+            term_to_string(e, &env)?,
+        )),
     }
 }
 
-fn new_name<'a>(s: impl Into<Symbol>, env: &'a Env) -> (Symbol, Env<'a>) {
+fn new_name<'a>(s: impl Into<Symbol>, ty: &LTy, env: &'a Env) -> (Symbol, Env<'a>) {
     let mut current_symbol = s.into();
     while env.get_db_index(current_symbol).is_some() {
         current_symbol = Symbol::from(format!("{}'", current_symbol));
     }
     let mut new_env = Env::with_parent(&env);
-    new_env.insert_local(current_symbol);
+    new_env.insert_local(current_symbol, ty.clone());
     (current_symbol, new_env)
 }
 
@@ -239,19 +298,29 @@ macro_rules! T {
     (var $name:expr $(,)?) => {
         Rc::new(Term::Variable($name.into(), None.into()))
     };
-    (abs $param:expr, $body:expr $(,)?) => {
-        Rc::new(Term::Abstraction($param.into(), $body.clone()))
+    (abs $param:expr, $ty:expr, $body:expr $(,)?) => {
+        Rc::new(Term::Abstraction($param.into(), $ty.clone(), $body.clone()))
     };
     (app $t1:expr, $t2:expr $(,)?) => {
         Rc::new(Term::Application($t1.clone(), $t2.clone()))
+    };
+    (true $(,)?) => {
+        Rc::new(Term::True)
+    };
+    (false $(,)?) => {
+        Rc::new(Term::False)
+    };
+    (if $cond:expr, $then:expr, $else:expr $(,)?) => {
+        Rc::new(Term::If($cond.clone(), $then.clone(), $else.clone()))
     };
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::parse;
-
     use super::*;
+    use crate::types::Ty;
+    use crate::{parser::parse, types::type_of, TY};
+    use std::rc::Rc;
 
     fn check(lt: LTerm, expected: LTerm) {
         actual_check(lt, expected, None);
@@ -265,7 +334,7 @@ mod tests {
         let default_env = Env::new();
         let env = env.unwrap_or(&default_env);
 
-        let eval_res = eval(lt, &env).expect("Could not evaluate");
+        let eval_res = eval(&lt, &env).expect("Could not evaluate");
         assert_eq!(eval_res, expected);
     }
 
@@ -273,8 +342,8 @@ mod tests {
     #[test]
     fn test_eval_variable() -> Result<()> {
         let mut env = Env::new();
-        let id = parse("λx.x", &env)?;
-        env.insert_variable("id", id.clone());
+        let id = parse("λx:Bool.x", &env)?;
+        env.insert_variable("id", id.clone(), type_of(&id, &env)?);
 
         check_env(parse("id", &env)?, id, &env);
         Ok(())
@@ -283,105 +352,111 @@ mod tests {
     /// Evaluating an abstraction, returns the abstraction
     #[test]
     fn test_eval_abstraction() -> Result<()> {
-        let id = parse("λx.x", &Env::new())?;
+        let id = parse("λx:Bool.x", &Env::new())?;
         check(id.clone(), id);
         Ok(())
     }
 
     #[test]
     fn test_application_abstraction_to_abstraction() -> Result<()> {
-        let id = parse("λx.x", &Env::new())?;
         let mut env = Env::new();
-        env.insert_variable("id", id.clone());
+        let id = parse("λx:Bool.x", &env)?;
+        let apply_fn = parse("λf:Bool → Bool.λb:Bool.f b", &env)?;
+        env.insert_variable("id", id.clone(), type_of(&id, &env)?);
+        env.insert_variable("applyfn", apply_fn.clone(), type_of(&apply_fn, &env)?);
 
-        check_env(parse("id id", &env)?, id, &env);
+        check_env(
+            parse("applyfn id", &env)?,
+            parse("λb:Bool.(λx:Bool.x) b", &env)?,
+            &env,
+        );
         Ok(())
     }
 
     #[test]
     fn test_booleans() -> Result<()> {
         let mut env = Env::new();
-        let tru = parse("λt.λf.t", &env)?;
-        env.insert_variable("true", tru.clone());
+        let tru = parse("λt:Bool.λf:Bool.t", &env)?;
+        env.insert_variable("tru", tru.clone(), type_of(&tru, &env)?);
         // λt.λf.f
-        let fls = parse("λt.λf.f", &env)?;
-        env.insert_variable("false", fls.clone());
+        let fls = parse("λt:Bool.λf:Bool.f", &env)?;
+        env.insert_variable("fls", fls.clone(), type_of(&fls, &env)?);
         // λb.λc. b c false
-        let and = parse("λb.λc.b c false", &env)?;
-        env.insert_variable("and", and.clone());
+        let and = parse("λb:Bool.λc:Bool.if b then c else false", &env)?;
+        env.insert_variable("and", and.clone(), type_of(&and, &env)?);
 
         // and true true → true
-        check_env(parse("and true true", &env)?, tru.clone(), &env);
+        check_env(parse("and true true", &env)?, T![true], &env);
         // and true false → false
-        check_env(parse("and true false", &env)?, fls.clone(), &env);
+        check_env(parse("and true false", &env)?, T![false], &env);
         // and false true → false
-        check_env(parse("and false true", &env)?, fls.clone(), &env);
+        check_env(parse("and false true", &env)?, T![false], &env);
         // and false false → false
-        check_env(parse("and false false", &env)?, fls.clone(), &env);
+        check_env(parse("and false false", &env)?, T![false], &env);
 
         // λb. b false true
-        let not = parse("λb. b false true", &env)?;
-        env.insert_variable("not", not.clone());
+        let not = parse("λb:Bool. if b then false else true", &env)?;
+        env.insert_variable("not", not.clone(), type_of(&not, &env)?);
 
         // not true → false
-        check_env(parse("not true", &env)?, fls.clone(), &env);
+        check_env(parse("not true", &env)?, T![false], &env);
         // not false → true
-        check_env(parse("not false", &env)?, tru.clone(), &env);
+        check_env(parse("not false", &env)?, T![true], &env);
 
         // λb.λc. b true c
-        let or = parse("λb.λc.b true c", &env)?;
-        env.insert_variable("or", or.clone());
+        let or = parse("λb:Bool.λc:Bool.if b then true else c", &env)?;
+        env.insert_variable("or", or.clone(), type_of(&or, &env)?);
 
         // or true true → true
-        check_env(parse("or true true", &env)?, tru.clone(), &env);
+        check_env(parse("or true true", &env)?, T![true], &env);
         // or true false → true
-        check_env(parse("or true false", &env)?, tru.clone(), &env);
+        check_env(parse("or true false", &env)?, T![true], &env);
         // or false true → true
-        check_env(parse("or false true", &env)?, tru.clone(), &env);
+        check_env(parse("or false true", &env)?, T![true], &env);
         // or false false → false
-        check_env(parse("or false false", &env)?, fls.clone(), &env);
+        check_env(parse("or false false", &env)?, T![false], &env);
         Ok(())
     }
 
     #[test]
     fn test_shifting() -> Result<()> {
         let mut env = Env::new();
-        let tru = parse("λt.λf.t", &env)?;
-        env.insert_variable("true", tru.clone());
+        let tru = parse("λt:Bool.λf:Bool.t", &env)?;
+        env.insert_variable("tru", tru.clone(), type_of(&tru, &env)?);
 
-        let id = parse("λx.x", &env)?;
-        env.insert_variable("id", id.clone());
+        let id = parse("λx:Bool.x", &env)?;
+        env.insert_variable("id", id.clone(), type_of(&id, &env)?);
 
         let id_shifted = shift(&id, 1)?;
         // Shouldn't touch id
         assert_eq!(id_shifted, id);
 
-        let r#const = parse("λx.true", &env)?;
+        let r#const = parse("λx:Bool.tru", &env)?;
         let const_shifted = shift(&r#const, 1)?;
         // Should shift true from 1 → 2
-        assert_eq!(const_shifted, T![abs "x", T![var 2]]);
+        assert_eq!(const_shifted, T![abs "x", TY![bool], T![var 2]]);
 
-        let test = parse("true id", &env)?;
+        let test = parse("tru id", &env)?;
         let test_shifted = shift_above(&test, 3, 1)?;
         assert_eq!(test_shifted, T![app T![var 0], T![var 4]]);
         assert_eq!(test, T![app T![var 0], T![var 1]]);
 
         // ↑²(λ.λ.1 (0 2))
-        let book_example_1 = parse("λx.λy.x (y true)", &env)?;
+        let book_example_1 = parse("λx:Bool.λy:Bool.x (y tru)", &env)?;
         let b_ex_1_shifted = shift(&book_example_1, 2)?;
         // Expected λ.λ.1 (0 4)
         assert_eq!(
             b_ex_1_shifted,
-            T![abs "x", T![abs "y", T![app T![var 1], T![app T![var 0], T![var 4]]]]]
+            T![abs "x", TY![bool], T![abs "y", TY![bool], T![app T![var 1], T![app T![var 0], T![var 4]]]]]
         );
 
         // ↑²(λ.0 1 (λ. 0 1 2))
-        let book_example_2 = parse("λx.x true (λy.y x true)", &env)?;
+        let book_example_2 = parse("λx:Bool.x tru (λy:Bool.y x tru)", &env)?;
         let b_ex_2_shifted = shift(&book_example_2, 2)?;
         // Expected λ.0 3 (λ. 0 1 4)
         assert_eq!(
             b_ex_2_shifted,
-            T![abs "x", T![app T![app T![var 0], T![var 3]], T![abs "y", T![app T![app T![var 0], T![var 1]], T![var 4]]]]]
+            T![abs "x", TY![bool], T![app T![app T![var 0], T![var 3]], T![abs "y", TY![bool], T![app T![app T![var 0], T![var 1]], T![var 4]]]]]
         );
         Ok(())
     }
@@ -389,25 +464,31 @@ mod tests {
     #[test]
     fn test_de_bruijn_indices_work() -> Result<()> {
         let mut env = Env::new();
-        let t = parse("λt.λf.t", &env)?;
-        assert_eq!(term_to_string(&t, &env)?, "λt.λf.t");
+        let t = parse("λt:Bool.λf:Bool.t", &env)?;
+        assert_eq!(term_to_string(&t, &env)?, "λt:Bool.λf:Bool.t");
 
-        let t = parse("λx.x x", &env)?;
-        assert_eq!(term_to_string(&t, &env)?, "λx.x x");
+        let t = parse("λx:Bool.x x", &env)?;
+        assert_eq!(term_to_string(&t, &env)?, "λx:Bool.x x");
 
-        let t = parse("λx.λx.x", &env)?;
-        assert_eq!(term_to_string(&t, &env)?, "λx.λx'.x'");
+        let t = parse("λx:Bool.λx:Bool.x", &env)?;
+        assert_eq!(term_to_string(&t, &env)?, "λx:Bool.λx':Bool.x'");
 
-        let t = parse("(λx.λy.x y) λx.x", &env)?;
-        let t = eval(t, &env)?;
-        assert_eq!(term_to_string(&t, &env)?, "λy.(λx.x) y");
+        let t = parse("(λx:Bool → Bool.λy:Bool.x y) λx:Bool.x", &env)?;
+        let t = eval(&t, &env)?;
+        assert_eq!(term_to_string(&t, &env)?, "λy:Bool.(λx:Bool.x) y");
 
-        let id = parse("λx.x", &env)?;
-        env.insert_variable("id", id);
+        let id = parse("λx:Bool.x", &env)?;
+        env.insert_variable("id", id.clone(), type_of(&id, &env)?);
 
-        let t = parse("(λz.λid.id z) λz.id z", &env)?;
-        let t = eval(t, &env)?;
-        assert_eq!(term_to_string(&t, &env)?, "λid'.id' λz.id z");
+        let t = parse(
+            "(λz:Bool → Bool.λid:(Bool → Bool) → Bool.id z) λz:Bool.id z",
+            &env,
+        )?;
+        let t = eval(&t, &env)?;
+        assert_eq!(
+            term_to_string(&t, &env)?,
+            "λid':(Bool → Bool) → Bool.id' λz:Bool.id z"
+        );
         Ok(())
     }
 }

@@ -1,16 +1,31 @@
 use crate::term::LTerm;
+use crate::types::LTy;
 use crate::Symbol;
 use anyhow::Result;
 use log::error;
 use std::collections::HashMap;
+use std::default;
 
 /// Terms are stored along with their calculated de Bruijn index
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Env<'a> {
-    pub context: HashMap<Symbol, usize>,
-    pub vars: Vec<LTerm>,
-    pub names: Vec<Symbol>,
-    pub parent: Option<&'a Env<'a>>,
+    context: HashMap<Symbol, usize>,
+    vars: Vec<LTerm>,
+    names: Vec<Symbol>,
+    types: Vec<LTy>,
+    parent: Option<&'a Env<'a>>,
+}
+
+impl<'a> default::Default for Env<'a> {
+    fn default() -> Self {
+        Self {
+            context: HashMap::new(),
+            vars: Vec::new(),
+            names: Vec::new(),
+            types: Vec::new(),
+            parent: None,
+        }
+    }
 }
 
 impl<'a> Env<'a> {
@@ -23,6 +38,7 @@ impl<'a> Env<'a> {
             parent: Some(parent),
             vars: Vec::new(),
             names: Vec::with_capacity(1),
+            types: Vec::with_capacity(1),
             // Every lambda is only allowed to have one variable
             // Only the root may have multiple.
             context: HashMap::with_capacity(1),
@@ -56,19 +72,28 @@ impl<'a> Env<'a> {
         }
     }
 
-    pub fn insert_local(&mut self, k: impl Into<Symbol>) {
+    pub fn get_type(&self, idx: usize) -> Option<LTy> {
+        self.types
+            .get(idx)
+            .cloned()
+            .or_else(|| self.parent.and_then(|p| p.get_type(idx - self.types.len())))
+    }
+
+    pub fn insert_local(&mut self, k: impl Into<Symbol>, ty: LTy) {
         let db_idx = self.context.len();
         let k = k.into();
         self.context.insert(k, db_idx);
         self.names.push(k);
+        self.types.push(ty);
     }
 
-    pub fn insert_variable(&mut self, k: impl Into<Symbol>, t: LTerm) {
+    pub fn insert_variable(&mut self, k: impl Into<Symbol>, t: LTerm, ty: LTy) {
         let k = k.into();
         let db_idx = self.vars.len();
         self.context.insert(k, db_idx);
         self.vars.push(t);
         self.names.push(k);
+        self.types.push(ty);
     }
 
     /// Get the de Bruijn index of the term pointed to by `name`.
@@ -101,41 +126,39 @@ pub fn base_env() -> Env<'static> {
 
 fn base_env_() -> Result<Env<'static>> {
     use crate::parser::parse;
-
+    use crate::types::type_of;
     let mut env = Env::new();
 
     macro_rules! p {
         ($name:expr, $input:expr, $env:expr) => {
             let t = parse($input, &$env)?;
-            $env.insert_variable($name, t);
+            let ty = type_of(&t, &$env)?;
+            $env.insert_variable($name, t, ty);
         };
     }
 
-    p!("true", "λt.λf.t", env);
-    p!("false", "λt.λf.f", env);
-    p!("not", "λb. b false true", env);
-    p!("and", "λb.λc. b c false", env);
-    p!("or", "λb.λc. b true c", env);
-    p!("if", "λl.λm.λn. l m n", env);
-    p!("pair", "λf.λs.λb. b f s", env);
-    p!("first", "λp. p true", env);
-    p!("second", "λp. p false", env);
+    p!("not", "λb:Bool.if b then false else true", env);
+    p!("and", "λb:Bool.λc:Bool.if b then c else false", env);
+    p!("or", "λb:Bool.λc:Bool.if b then true else c", env);
+    // p!("pair", "λf.λs.λb. b f s", env);
+    // p!("first", "λp. p true", env);
+    // p!("second", "λp. p false", env);
 
-    p!("c0", "λs.λz.z", env);
-    p!("c1", "λs.λz.s z", env);
-    p!("c2", "λs.λz.s (s z)", env);
-    p!("c3", "λs.λz.s (s (s z))", env);
+    // p!("c0", "λs.λz.z", env);
+    // p!("c1", "λs.λz.s z", env);
+    // p!("c2", "λs.λz.s (s z)", env);
+    // p!("c3", "λs.λz.s (s (s z))", env);
 
-    p!("succ", "λn.λs.λz.s (n s z)", env);
-    p!("plus", "λm.λn.λs.λz.m s (n s z)", env);
-    p!("times", "λm.λn.m (plus n) c0", env);
-    p!("iszero", "λm.m (λx.false) true", env);
+    // p!("succ", "λn.λs.λz.s (n s z)", env);
+    // p!("plus", "λm.λn.λs.λz.m s (n s z)", env);
+    // p!("times", "λm.λn.m (plus n) c0", env);
+    // p!("iszero", "λm.m (λx.false) true", env);
 
-    p!("zz", "pair c0 c0", env);
-    p!("ss", "λp.pair (second p) (plus c1 (second p))", env);
-    p!("pred", "λm. first (m ss zz)", env);
+    // p!("zz", "pair c0 c0", env);
+    // p!("ss", "λp.pair (second p) (plus c1 (second p))", env);
+    // p!("pred", "λm. first (m ss zz)", env);
 
-    p!("equalb", "λp.λq.p q (not q)", env);
+    // p!("equalb", "λp.λq.p q (not q)", env);
 
     Ok(env)
 }
@@ -143,24 +166,29 @@ fn base_env_() -> Result<Env<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse;
+    use crate::{
+        parser::parse,
+        types::{type_of, Ty},
+    };
+    use std::rc::Rc;
 
     #[test]
     fn test_env() -> Result<()> {
         let mut env = Env::new();
+        let bool_ty = Rc::new(Ty::Bool);
         assert_eq!(env.get("id"), None);
 
-        let id = parse("λx.x", &env)?;
-        env.insert_variable("id", id.clone());
+        let id = parse("λx:Bool.x", &env)?;
+        env.insert_variable("id", id.clone(), type_of(&id, &env)?);
         assert_eq!(env.get("id"), Some(id.clone()));
 
-        let tru = parse("λt.λf.t", &env)?;
-        env.insert_variable("true", tru.clone());
+        let tru = parse("λt:Bool.λf:Bool.t", &env)?;
+        env.insert_variable("true", tru.clone(), type_of(&tru, &env)?);
         assert_eq!(env.get("true"), Some(tru.clone()));
         assert_eq!(env.get("id"), Some(id.clone()));
 
         let mut id_env = Env::with_parent(&env);
-        id_env.insert_local("x");
+        id_env.insert_local("x", bool_ty.clone());
         assert_eq!(id_env.get("x"), None);
         assert_eq!(id_env.get_db_index("x"), Some(0));
         assert_eq!(id_env.get_db_index("id"), Some(1));
@@ -169,7 +197,7 @@ mod tests {
         assert_eq!(id_env.get("true"), Some(tru.clone()));
 
         let mut id_env_2 = Env::with_parent(&env);
-        id_env_2.insert_local("id");
+        id_env_2.insert_local("id", bool_ty);
         assert_eq!(id_env_2.get("id"), None);
         assert_eq!(id_env_2.get_db_index("id"), Some(0));
         assert_eq!(id_env_2.get_db_index("true"), Some(2));

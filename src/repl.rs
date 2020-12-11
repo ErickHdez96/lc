@@ -26,7 +26,7 @@ pub fn run_repl() -> Result<()> {
                 line => {
                     rl.add_history_entry(line);
                     match parse(line, &env)
-                        .and_then(|p| eval(p, &env))
+                        .and_then(|p| eval(&p, &env))
                         .and_then(|p| term_to_string(&p, &env))
                     {
                         Ok(parsed) => println!("{}", parsed),
