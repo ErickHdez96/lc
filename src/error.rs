@@ -1,8 +1,10 @@
+use crate::Span;
 use std::fmt;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     pub msg: String,
+    pub span: Span,
     pub kind: ErrorKind,
 }
 
@@ -14,9 +16,10 @@ pub enum ErrorKind {
 }
 
 impl Error {
-    pub fn new(msg: impl Into<String>, kind: ErrorKind) -> Self {
+    pub fn new(msg: impl Into<String>, span: Span, kind: ErrorKind) -> Self {
         Self {
             msg: msg.into(),
+            span,
             kind,
         }
     }

@@ -1,6 +1,7 @@
 use crate::types::LTy;
 use crate::Error;
 use crate::ErrorKind;
+use crate::Span;
 use crate::Symbol;
 use crate::T;
 /// Evaluation strategies:
@@ -76,7 +77,8 @@ type Result<T> = std::result::Result<T, Error>;
 
 macro_rules! error {
     ($msg:expr, $($arg:expr),*) => {
-        Error::new(format!($msg, $($arg),*), ErrorKind::Runtime)
+        // FIXME: Add correct span info
+        Error::new(format!($msg, $($arg),*), Span::new(0, 0), ErrorKind::Runtime)
     };
     ($msg:expr) => {
         error!($msg,)

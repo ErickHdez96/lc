@@ -1,11 +1,12 @@
-use crate::{Env, Error, ErrorKind, LTerm, Symbol, Term, TY};
+use crate::{Env, Error, ErrorKind, LTerm, Span, Symbol, Term, TY};
 use std::{fmt, rc::Rc};
 
 type Result<T> = std::result::Result<T, Error>;
 
 macro_rules! error {
     ($msg:expr, $($arg:expr),*) => {
-        Error::new(format!($msg, $($arg),+), ErrorKind::Type)
+        // FIXME: Add correct span info
+        Error::new(format!($msg, $($arg),+), Span::new(0, 0), ErrorKind::Type)
     };
     ($msg:expr) => {
         error!($msg,)

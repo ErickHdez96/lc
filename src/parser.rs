@@ -1,4 +1,3 @@
-use crate::types::{LTy, Ty};
 use crate::Env;
 use crate::{
     lexer::{tokenize, Token, TokenKind},
@@ -8,16 +7,20 @@ use crate::{
     term::{LTerm, Term},
     Error, ErrorKind, TY,
 };
+use crate::{
+    types::{LTy, Ty},
+    Span,
+};
 use std::rc::Rc;
 
 type Result<T> = std::result::Result<T, Error>;
 
 macro_rules! error {
-    ($msg:expr, $($arg:expr),*) => {
-        Error::new(format!($msg, $($arg),*), ErrorKind::Parser)
+    ($msg:expr, $($arg:expr),*; $span:expr) => {
+        Error::new(format!($msg, $($arg),*), $span, ErrorKind::Parser)
     };
-    ($msg:expr) => {
-        error!($msg,)
+    ($msg:expr; $span:expr) => {
+        error!($msg,;$span)
     };
 }
 
@@ -42,7 +45,7 @@ impl<'a> Parser<'a> {
         let parsed = self.parse_term(true, env)?;
 
         match self.next() {
-            t if t.kind != TokenKind::Eof => Err(error!("Expected <eof>, got `{}`", t.text)),
+            t if t.kind != TokenKind::Eof => Err(error!("Expected <eof>, got `{}`", t; t.span)),
             _ => Ok(parsed),
         }
     }
@@ -64,13 +67,6 @@ impl<'a> Parser<'a> {
         t
     }
 
-    fn next_text(&mut self) -> &str {
-        match self.next() {
-            t if t.kind == TokenKind::Eof => "<eof>",
-            t => t.text,
-        }
-    }
-
     fn bump(&mut self) {
         self.cursor += 1;
     }
@@ -79,7 +75,8 @@ impl<'a> Parser<'a> {
         if self.current() == kind {
             Ok(self.next())
         } else {
-            Err(error!("Expected a `{}`, got {}", kind, self.next_text()))
+            let t = self.next();
+            Err(error!("Expected a `{}`, got `{}`", kind, t.kind; t.span))
         }
     }
 
@@ -108,7 +105,7 @@ impl<'a> Parser<'a> {
                 Ok(term)
             }
             TokenKind::LParen => self.parse_application_or_var(env),
-            TokenKind::Eof => Err(error!("Expected a term, got <eof>")),
+            TokenKind::Eof => Err(error!("Expected a term, got `<eof>`"; self.next().span)),
             TokenKind::RParen
             | TokenKind::Error
             | TokenKind::Period
@@ -117,7 +114,10 @@ impl<'a> Parser<'a> {
             | TokenKind::Else
             | TokenKind::Colon
             | TokenKind::Arrow
-            | TokenKind::Wildcard => Err(error!("Expected a term, got `{}`", self.next().text)),
+            | TokenKind::Wildcard => {
+                let t = self.next();
+                Err(error!("Expected a term, got `{}`", t; t.span))
+            }
             TokenKind::True if !parse_application => {
                 self.bump();
                 Ok(T![true])
@@ -169,11 +169,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_number(&mut self, _env: &Env) -> Result<LTerm> {
-        let n = self
-            .next()
+        let t = self.next();
+        let n = t
             .text
             .parse::<u64>()
-            .map_err(|_| error!("Number too large"))?;
+            .map_err(|_| error!("Number too large"; t.span))?;
 
         let mut number = T![0];
         for _ in 0..n {
@@ -188,25 +188,35 @@ impl<'a> Parser<'a> {
             TokenKind::Ident,
             "parse_ident expects to be called on an identifier"
         );
-        let s = self.eat_ident(false)?;
-        Ok(T![var self.lookup_ident(s, env)?])
+        let (s, span) = self.eat_ident(false)?;
+        Ok(T![var self.lookup_ident(s, env).map_err(|e| error!("{}", e; span))?])
     }
 
-    fn lookup_ident(&self, s: Symbol, env: &Env) -> Result<usize> {
+    fn lookup_ident(&self, s: Symbol, env: &Env) -> std::result::Result<usize, String> {
         env.get_db_index(s)
-            .ok_or_else(|| error!("Variable `{}` not bound", s))
+            .ok_or_else(|| format!("Variable `{}` not bound", s))
     }
 
-    fn eat_ident(&mut self, accept_wildcard: bool) -> Result<Symbol> {
+    fn eat_ident(&mut self, accept_wildcard: bool) -> Result<(Symbol, Span)> {
         match self.current() {
-            TokenKind::Wildcard if accept_wildcard => Ok(Symbol::from(self.next().text)),
-            _ => self.eat(TokenKind::Ident).map(|t| Symbol::from(t.text)),
+            TokenKind::Wildcard if accept_wildcard => {
+                let t = self.next();
+                Ok((Symbol::from(t.text), t.span))
+            }
+            TokenKind::Ident => {
+                let t = self.next();
+                Ok((Symbol::from(t.text), t.span))
+            }
+            _ => {
+                let t = self.next();
+                Err(error!("Expected an identifier, got `{}`", t; t.span))
+            }
         }
     }
 
     fn parse_abstraction(&mut self, env: &Env) -> Result<LTerm> {
         self.bump();
-        let ident = self.eat_ident(true)?;
+        let (ident, _) = self.eat_ident(true)?;
         self.eat(TokenKind::Colon)?;
         let ty = self.parse_type(&env)?;
         self.eat(TokenKind::Period)?;
@@ -230,7 +240,10 @@ impl<'a> Parser<'a> {
                 "Unit" => Rc::new(Ty::Unit),
                 text => Rc::new(Ty::Base(text.into())),
             },
-            k => return Err(error!("Expected a type, got `{}`", k)),
+            _ => {
+                let t = self.next();
+                return Err(error!("Expected a type, got `{}`", t; t.span));
+            }
         };
 
         if self.current() == TokenKind::Arrow {
@@ -301,15 +314,15 @@ mod tests {
 
     #[test]
     fn error_parse_abstraction_no_body() {
-        check_error("λx:Bool.", "Expected a term, got <eof>");
-        check_error("λx", "Expected a `:`, got <eof>");
-        check_error("λ", "Expected a `<ident>`, got <eof>");
+        check_error("λx:Bool.", "Expected a term, got `<eof>`");
+        check_error("λx", "Expected a `:`, got `<eof>`");
+        check_error("λ", "Expected an identifier, got `<eof>`");
     }
 
     #[test]
     fn error_parse_unmatched_parens() {
-        check_error("(", "Expected a term, got <eof>");
-        check_error("(λx:Bool.x", "Expected a `)`, got <eof>");
+        check_error("(", "Expected a term, got `<eof>`");
+        check_error("(λx:Bool.x", "Expected a `)`, got `<eof>`");
         check_error(")", "Expected a term, got `)`");
     }
 

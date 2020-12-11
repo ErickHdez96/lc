@@ -1,13 +1,19 @@
+use crate::Span;
 use logos::Logos;
+use std::convert::TryFrom;
 
 pub fn tokenize(input: &str) -> Vec<Token> {
     let mut tokens = vec![];
-    let mut lexer = TokenKind::lexer(input);
+    let mut lexer: logos::Lexer<'_, TokenKind> = TokenKind::lexer(input);
 
     while let Some(tok) = lexer.next() {
+        let span = lexer.span();
+        let lo = u32::try_from(span.start).expect("Lc can't handle files larger than 4GB");
+        let hi = u32::try_from(span.end).expect("Lc can't handle files larger than 4GB");
         tokens.push(Token {
             kind: tok,
             text: lexer.slice(),
+            span: Span::new(lo, hi),
         });
     }
 
@@ -18,6 +24,7 @@ pub fn tokenize(input: &str) -> Vec<Token> {
 pub struct Token<'input> {
     pub kind: TokenKind,
     pub text: &'input str,
+    pub span: Span,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Logos)]
@@ -104,6 +111,16 @@ impl TokenKind {
     }
 }
 
+impl<'input> std::fmt::Display for Token<'input> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.kind == TokenKind::Eof {
+            write!(f, "<eof>")
+        } else {
+            self.text.fmt(f)
+        }
+    }
+}
+
 impl std::fmt::Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use TokenKind::*;
@@ -141,6 +158,7 @@ impl<'a> std::default::Default for Token<'a> {
     fn default() -> Self {
         Self {
             text: "",
+            span: Span::new(0, 0),
             kind: TokenKind::default(),
         }
     }
@@ -199,7 +217,17 @@ mod tests {
             tokenize("x"),
             vec![Token {
                 kind: Ident,
+                span: Span::new(0, 1),
                 text: "x"
+            }]
+        );
+
+        assert_eq!(
+            tokenize("true"),
+            vec![Token {
+                kind: True,
+                span: Span::new(0, 4),
+                text: "true"
             }]
         );
     }
