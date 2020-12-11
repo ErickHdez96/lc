@@ -29,7 +29,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse(mut self, env: &Env) -> Result<LTerm> {
-        self.parse_term(true, env)
+        let parsed = self.parse_term(true, env)?;
+
+        match self.next() {
+            t if t.kind != TokenKind::Eof => Err(anyhow!("Expected <eof>, got `{}`", t.text)),
+            _ => Ok(parsed),
+        }
     }
 
     fn current(&self) -> TokenKind {
@@ -71,7 +76,16 @@ impl<'a> Parser<'a> {
     fn parse_term(&mut self, parse_application: bool, env: &Env) -> Result<LTerm> {
         match self.current() {
             TokenKind::Ident if !parse_application => self.parse_ident(env),
-            TokenKind::Ident => self.parse_application_or_var(env),
+            TokenKind::Number if !parse_application => self.parse_number(env),
+            TokenKind::Succ | TokenKind::Pred | TokenKind::IsZero if !parse_application => {
+                let t = self.next().kind;
+                let term = self.parse_term(false, &env)?;
+                Ok(match t {
+                    TokenKind::Succ => T![succ term],
+                    TokenKind::Pred => T![pred term],
+                    _ => T![iszero term],
+                })
+            }
             TokenKind::Lambda => self.parse_abstraction(env),
             TokenKind::LParen if !parse_application => {
                 self.bump();
@@ -98,7 +112,6 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ok(T![false])
             }
-            TokenKind::True | TokenKind::False => self.parse_application_or_var(&env),
             TokenKind::If => {
                 self.bump();
                 let cond = self.parse_term(true, &env)?;
@@ -108,20 +121,17 @@ impl<'a> Parser<'a> {
                 let else_b = self.parse_term(true, &env)?;
                 Ok(T![if cond, then, else_b])
             }
+            TokenKind::Ident
+            | TokenKind::True
+            | TokenKind::False
+            | TokenKind::Succ
+            | TokenKind::Pred
+            | TokenKind::IsZero
+            | TokenKind::Number => self.parse_application_or_var(env),
         }
     }
 
     fn parse_application_or_var(&mut self, env: &Env) -> Result<LTerm> {
-        // We accept true and false for parsing
-        // The typechecker will catch the error
-        debug_assert!(
-            matches!(
-                self.current(),
-                TokenKind::Ident | TokenKind::LParen | TokenKind::True | TokenKind::False
-            ),
-            "parse_application_or_var should only be called on an Ident or an opening parentheses"
-        );
-
         let mut application_items = vec![];
         while self.current().can_start_term() {
             let term = self.parse_term(false, &env)?;
@@ -141,6 +151,20 @@ impl<'a> Parser<'a> {
             }
             None => Ok(t1),
         }
+    }
+
+    fn parse_number(&mut self, _env: &Env) -> Result<LTerm> {
+        let n = self
+            .next()
+            .text
+            .parse::<u64>()
+            .map_err(|_| anyhow!("Number too large"))?;
+
+        let mut number = T![0];
+        for _ in 0..n {
+            number = T![succ number];
+        }
+        Ok(number)
     }
 
     fn parse_ident(&mut self, env: &Env) -> Result<LTerm> {
@@ -187,6 +211,7 @@ impl<'a> Parser<'a> {
             }
             TokenKind::Ident => match self.next().text {
                 "Bool" => Rc::new(Ty::Bool),
+                "Nat" => Rc::new(Ty::Nat),
                 text => Rc::new(Ty::Base(text.into())),
             },
             k => return Err(anyhow!("Expected a type, got `{}`", k)),
@@ -343,6 +368,25 @@ mod tests {
         check(
             "λx:A → A.x",
             T![abs "x", TY![abs TY![base "A"], TY![base "A"]], T![var 0]],
+        );
+    }
+
+    #[test]
+    fn test_parse_nats() {
+        check("0", T![0]);
+        check("1", T![succ T![0]]);
+        check("5", T![succ T![succ T![succ T![succ T![succ T![0]]]]]]);
+        // We parse it, but the typechecker throws an error
+        check("0 0", T![app T![0], T![0]]);
+        check("λx:Nat.x", T![abs "x", TY![nat], T![var 0]]);
+        check("pred 0", T![pred T![0]]);
+        check("pred true", T![pred T![true]]);
+        check("succ 0", T![succ T![0]]);
+        check("iszero 0", T![iszero T![0]]);
+        check("iszero pred 0", T![iszero T![pred T![0]]]);
+        check(
+            "if iszero pred 0 then false else true",
+            T![if T![iszero T![pred T![0]]], T![false], T![true]],
         );
     }
 }

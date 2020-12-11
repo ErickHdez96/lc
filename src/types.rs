@@ -4,9 +4,15 @@ use std::{fmt, rc::Rc};
 
 pub type LTy = Rc<Ty>;
 
+/// ```text
+/// T ::=
+///     Bool    type of booleans
+///     T → T   type of functions
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ty {
     Bool,
+    Nat,
     Base(Symbol),
     Abstraction(LTy, LTy),
 }
@@ -21,6 +27,7 @@ impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bool => write!(f, "Bool"),
+            Self::Nat => write!(f, "Nat"),
             Self::Base(s) => s.fmt(f),
             Self::Abstraction(t1, t2) => {
                 let (l_paren, r_paren) = if t1.is_abstraction() {
@@ -38,6 +45,15 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
     match t.as_ref() {
         Term::True => Ok(TY![bool]),
         Term::False => Ok(TY![bool]),
+        Term::Zero => Ok(TY![nat]),
+        Term::Succ(t) | Term::Pred(t) => match type_of(t, &env)?.as_ref() {
+            Ty::Nat => Ok(TY![nat]),
+            t => Err(anyhow!("Expected type Nat, got `{}`", t)),
+        },
+        Term::IsZero(t) => match type_of(t, &env)?.as_ref() {
+            Ty::Nat => Ok(TY![bool]),
+            t => Err(anyhow!("Expected type Nat, got `{}`", t)),
+        },
         Term::Abstraction(v, ty, body) => {
             let mut env = Env::with_parent(&env);
             env.insert_local(*v, ty.clone());
@@ -86,6 +102,9 @@ macro_rules! TY {
     (bool) => {
         Rc::new(Ty::Bool)
     };
+    (nat) => {
+        Rc::new(Ty::Nat)
+    };
     (base $s:expr) => {
         Rc::new(Ty::Base($s.into()))
     };
@@ -104,6 +123,16 @@ mod tests {
         assert_eq!(
             type_of(&parse(input, &env).expect("Couldn't parse"), &env)
                 .expect("Couldn't type check"),
+            expected
+        );
+    }
+
+    fn check_parse_error(input: &str, expected: &str) {
+        let env = Env::new();
+        assert_eq!(
+            type_of(&parse(input, &env).expect("Couldn't parse"), &env)
+                .expect_err("Couldn't type check")
+                .to_string(),
             expected
         );
     }
@@ -220,6 +249,48 @@ mod tests {
         assert_eq!(
             type_of(&parsed, &env).expect("Couldn't type check"),
             TY![abs TY![abs TY![base "A"], TY![base "A"]], TY![abs TY![base "A"], TY![base "A"]]],
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_typecheck_nat() -> Result<()> {
+        check_parse("0", TY![nat]);
+        check_parse("5", TY![nat]);
+        check_parse("pred 0", TY![nat]);
+        check_parse("pred pred pred 0", TY![nat]);
+        check_parse("succ 0", TY![nat]);
+        check_parse("succ succ succ 0", TY![nat]);
+        check_parse("pred succ 0", TY![nat]);
+        check_parse("iszero 0", TY![bool]);
+        check_parse("iszero pred succ 0", TY![bool]);
+
+        // is_greater_than_one
+        check_parse("λx:Nat.iszero pred x", TY![abs TY![nat], TY![bool]]);
+        check_parse("(λx:Nat.iszero pred x) 0", TY![bool]);
+
+        Ok(())
+    }
+
+    #[test]
+    fn error_typecheck_nat() -> Result<()> {
+        check_parse_error("pred true", "Expected type Nat, got `Bool`");
+        check_parse_error("succ true", "Expected type Nat, got `Bool`");
+        check_parse_error(
+            "succ succ succ pred succ true",
+            "Expected type Nat, got `Bool`",
+        );
+        check_parse_error("iszero true", "Expected type Nat, got `Bool`");
+        check_parse_error("pred iszero 0", "Expected type Nat, got `Bool`");
+        check_parse_error("pred iszero true", "Expected type Nat, got `Bool`");
+        check_parse_error(
+            "if 0 then true else false",
+            "Guard conditional expects a Bool, got `Nat`",
+        );
+        check_parse_error(
+            "if iszero pred succ 0 then true else 0",
+            "Arms of conditional have different types: `Bool`, and `Nat`",
         );
 
         Ok(())

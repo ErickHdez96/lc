@@ -81,6 +81,10 @@ pub type LTerm = Rc<Term>;
 ///     true                Constant true
 ///     false               Constant false
 ///     if t then t else t  If
+///     0                   Constant zero
+///     succ t              Successor
+///     pred t              Predecessor
+///     iszero t            zero test
 /// ```
 #[derive(Debug, PartialEq, Eq)]
 pub enum Term {
@@ -93,33 +97,37 @@ pub enum Term {
     True,
     False,
     If(LTerm, LTerm, LTerm),
+    Zero,
+    Succ(LTerm),
+    Pred(LTerm),
+    IsZero(LTerm),
 }
 
+/// ```text
+/// t ::=                           Terms:
+///     x                               Variable
+///     λx.t                            Abstraction
+///     t t                             Application
+///
+/// v ::=                           Values:
+///     λx.t                            Abstraction Value
+///
+///    t1 → t1'
+/// --------------                      E-App1
+/// t1 t2 → t1' t2
+///
+///    t2 → t2'
+/// --------------                      E-App2
+/// v1 t2 → v1 t2'
+///
+/// (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)    (E-AppAbs)
+/// ```
 pub fn eval(t: &LTerm, env: &Env) -> Result<LTerm> {
     type_of(&t, &env)?;
     eval_(&t, env)
 }
 
-/// ```text
-/// t ::=                   Terms:
-///     x                       Variable
-///     λx.t                    Abstraction
-///     t t                     Application
-///
-/// v ::=                   Values:
-///     λx.t                    Abstraction Value
-///
-///    t1 → t1'
-/// --------------              E-App1
-/// t1 t2 → t1' t2
-///
-///    t2 → t2'
-/// --------------              E-App2
-/// v1 t2 → v1 t2'
-///
-/// (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)    (E-AppAbs)
-/// ```
-pub fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
+fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
     match t.as_ref() {
         Term::Application(t1, t2) => {
             //    t1 → t1'
@@ -170,7 +178,30 @@ pub fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
                 )),
             }
         }
-        _ => Ok(t.clone()),
+        Term::Abstraction(_, _, _) | Term::True | Term::False | Term::Zero => Ok(t.clone()),
+        Term::Succ(t) => Ok(T![succ eval_(t, &env)?]),
+        Term::Pred(t) => {
+            let t = eval_(t, &env)?;
+            match t.as_ref() {
+                Term::Zero => Ok(T![0]),
+                Term::Succ(t) => Ok(t.clone()),
+                _ => Err(anyhow!(
+                    "Expected a numeric value, got `{}`",
+                    term_to_string(&t, &env)?
+                )),
+            }
+        }
+        Term::IsZero(t) => {
+            let t = eval_(t, &env)?;
+            match t.as_ref() {
+                Term::Zero => Ok(T![true]),
+                Term::Succ(_) => Ok(T![false]),
+                _ => Err(anyhow!(
+                    "Expected a numeric value, got `{}`",
+                    term_to_string(&t, &env)?
+                )),
+            }
+        }
     }
 }
 
@@ -234,6 +265,10 @@ where
             }
             Term::True => Ok(t.clone()),
             Term::False => Ok(t.clone()),
+            Term::Zero => Ok(t.clone()),
+            Term::Succ(t) => Ok(T![succ map(t, cutoff, on_var)?]),
+            Term::Pred(t) => Ok(T![pred map(t, cutoff, on_var)?]),
+            Term::IsZero(t) => Ok(T![iszero map(t, cutoff, on_var)?]),
             Term::If(cond, then, else_b) => Ok(T![if
                                                map(cond, cutoff, on_var)?,
                                                map(then, cutoff, on_var)?,
@@ -271,6 +306,10 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
         }
         Term::True => Ok(String::from("true")),
         Term::False => Ok(String::from("false")),
+        Term::Zero => Ok(String::from("0")),
+        Term::Pred(t) => Ok(format!("pred {}", term_to_string(t, &env)?)),
+        Term::Succ(t) => Ok(format!("succ {}", term_to_string(t, &env)?)),
+        Term::IsZero(t) => Ok(format!("iszero {}", term_to_string(t, &env)?)),
         Term::If(c, t, e) => Ok(format!(
             "if {} then {} else {}",
             term_to_string(c, &env)?,
@@ -313,6 +352,18 @@ macro_rules! T {
     (if $cond:expr, $then:expr, $else:expr $(,)?) => {
         Rc::new(Term::If($cond.clone(), $then.clone(), $else.clone()))
     };
+    (0) => {
+        Rc::new(Term::Zero)
+    };
+    (succ $t:expr) => {
+        Rc::new(Term::Succ($t.clone()))
+    };
+    (pred $t:expr) => {
+        Rc::new(Term::Pred($t.clone()))
+    };
+    (iszero $t:expr) => {
+        Rc::new(Term::IsZero($t.clone()))
+    };
 }
 
 #[cfg(test)]
@@ -322,18 +373,20 @@ mod tests {
     use crate::{parser::parse, types::type_of, TY};
     use std::rc::Rc;
 
+    fn check_parse(input: &str, expected: LTerm) {
+        let env = Env::new();
+        actual_check(parse(input, &env).expect("Couldn't parse"), expected, &env);
+    }
+
     fn check(lt: LTerm, expected: LTerm) {
-        actual_check(lt, expected, None);
+        actual_check(lt, expected, &Env::new());
     }
 
     fn check_env(lt: LTerm, expected: LTerm, env: &Env) {
-        actual_check(lt, expected, Some(env));
+        actual_check(lt, expected, env);
     }
 
-    fn actual_check(lt: LTerm, expected: LTerm, env: Option<&Env>) {
-        let default_env = Env::new();
-        let env = env.unwrap_or(&default_env);
-
+    fn actual_check(lt: LTerm, expected: LTerm, env: &Env) {
         let eval_res = eval(&lt, &env).expect("Could not evaluate");
         assert_eq!(eval_res, expected);
     }
@@ -490,5 +543,23 @@ mod tests {
             "λid':(Bool → Bool) → Bool.id' λz:Bool.id z"
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_eval_nat() {
+        check_parse("0", T![0]);
+        check_parse("1", T![succ T![0]]);
+        check_parse("iszero 0", T![true]);
+        check_parse("iszero succ 0", T![false]);
+        check_parse("iszero pred succ 0", T![true]);
+        check_parse("pred 0", T![0]);
+        check_parse("pred succ 0", T![0]);
+        check_parse("pred pred pred pred 0", T![0]);
+        check_parse("succ succ pred 0", T![succ T![succ T![0]]]);
+
+        check_parse("pred 3", T![succ T![succ T![0]]]);
+        check_parse("(λx:Nat.iszero pred x) 0", T![true]);
+        check_parse("(λx:Nat.iszero pred x) 1", T![true]);
+        check_parse("(λx:Nat.iszero pred x) 2", T![false]);
     }
 }

@@ -43,6 +43,18 @@ pub enum TokenKind {
     #[token("else")]
     Else,
 
+    #[token("succ")]
+    Succ,
+
+    #[token("pred")]
+    Pred,
+
+    #[token("iszero")]
+    IsZero,
+
+    #[regex("[0-9]+")]
+    Number,
+
     #[regex(r"[a-zA-Z][a-zA-Z0-9]*'*")]
     Ident,
 
@@ -80,6 +92,10 @@ impl TokenKind {
                 | TokenKind::If
                 | TokenKind::Ident
                 | TokenKind::LParen
+                | TokenKind::Number
+                | TokenKind::IsZero
+                | TokenKind::Pred
+                | TokenKind::Succ
         )
     }
 }
@@ -105,6 +121,10 @@ impl std::fmt::Display for TokenKind {
                 Colon => ":",
                 Arrow => "→",
                 Wildcard => "_",
+                Succ => "succ",
+                Pred => "pred",
+                IsZero => "iszero",
+                Number => "<number>",
                 Error => "<unknown char>",
                 Eof => "<eof>",
             }

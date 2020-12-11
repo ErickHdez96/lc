@@ -40,52 +40,114 @@ The type assumed for x in Γ is T.
 Γ ⊢ t₁ : T₁₁ → T₁₂      Γ ⊢ t₂ : T₁₁
 ------------------------------------    T-App
           Γ ⊢ t₁ t₂ : T₁₂
+```
+
+## Syntactic forms
+
+```
+t ::=                   terms:
+    x                           variable
+    λx:T.t                      abstraction
+    t t                         application
+    true                        constant true
+    false                       constant false
+    if t then t else t          conditional
+    0                           constant 0
+    succ t                      successor
+    pred t                      predecessor
+    iszero t                    zero test
+
+v ::=                   values:
+    λx:T.t                      abstraction value
+    true                        true value
+    false                       false value
+    nv
+
+nv ::=                  numeric values:
+    0                           zero value
+    succ nv                     successor value
 
 
-Syntax
-t::=            terms:
-    x           variable
-    λx:T.t      abstraction
-    t t         application
+T ::=                   types:
+    T → T                       type of functions
+    Bool                        type of booleans
+    Nat                         type of natural numbers
 
-v ::=           values:
-    λx:T.t      abstraction value
+Γ ::=                   contexts:
+    ∅                           empty context
+    Γ,x:T                       term variable binding
+```
 
+## Evaluation
 
-T ::=           types:
-    T → T       type of functions
-
-
-Γ ::=           contexts:
-    ∅           empty context
-    Γ,x:T       term variable binding
-
-
-Evaluation
-
+```
     t₁ → t′₁
---------------                  E-App1
+--------------                          E-App1
 t₁ t₂ → t′₁ t₂
 
     t₂ → t′₂
---------------                  E-App2
+--------------                          E-App2
 v₁ t₂ → v₁ t′₂
 
-(λx:T₁₁.t₁₂)v₂ → [x ↦ v₂]t₁₂    E-AppAbs
+(λx:T₁₁.t₁₂)v₂ → [x ↦ v₂]t₁₂            E-AppAbs
 
-Typing                          Γ ⊢ t : T
+     t₁ → t′₁
+------------------                      E-Succ
+succ t₁ → succ t′₁
 
+pred 0 → 0                              E-PredZero
+
+pred (succ nv₁) → nv₁                   E-PredSucc
+
+     t₁ → t′₁
+------------------                      E-Pred
+pred t₁ → pred t′₁
+
+iszero 0 → true                         E-IsZeroZero
+
+iszero (succ nv₁) → false               E-IsZeroSucc
+
+       t₁ → t′₁
+----------------------                  E-IsZero
+iszero t₁ → iszero t′₁
+```
+
+## Typing                                  Γ ⊢ t : T
+
+```
  x:T ∈ Γ
----------                       T-Var
+---------                               T-Var
 Γ ⊢ x : T
 
    Γ,x:T₁ ⊢ t₂:T₂
---------------------            T-Abs
+--------------------                    T-Abs
 Γ ⊢ λx:T₁.t₂ : T₁→T₂
 
 Γ ⊢ t₁ : T₁₁ → T₁₂   Γ ⊢ t₂ : T₁₁
 ------------------------------------    T-App
          Γ ⊢ t₁ t₂ : T₁₂
+
+true : Bool                             T-True
+
+false : Bool                            T-False
+
+t₁ : Bool    t₂ : T    t₃ : T
+-----------------------------           T-If
+  if t₁ then t₂ else t₃ : T
+
+0 : Nat                                 T-Zero
+
+   t₁ : Nat
+-------------                           T-Succ
+succ t₁ : Nat
+
+  t₁ : Nat
+-------------                           T-Pred
+pred t₁ : Nat
+
+    t₁ : Nat
+----------------                        T-IsZero
+iszero t₁ : Bool
 
 Logic                           Programming
 ------------------------------------------------------------------

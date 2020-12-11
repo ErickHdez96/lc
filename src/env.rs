@@ -144,11 +144,6 @@ fn base_env_() -> Result<Env<'static>> {
     // p!("first", "λp. p true", env);
     // p!("second", "λp. p false", env);
 
-    // p!("c0", "λs.λz.z", env);
-    // p!("c1", "λs.λz.s z", env);
-    // p!("c2", "λs.λz.s (s z)", env);
-    // p!("c3", "λs.λz.s (s (s z))", env);
-
     // p!("succ", "λn.λs.λz.s (n s z)", env);
     // p!("plus", "λm.λn.λs.λz.m s (n s z)", env);
     // p!("times", "λm.λn.m (plus n) c0", env);
