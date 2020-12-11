@@ -140,20 +140,14 @@ fn base_env_() -> Result<Env<'static>> {
     p!("not", "λb:Bool.if b then false else true", env);
     p!("and", "λb:Bool.λc:Bool.if b then c else false", env);
     p!("or", "λb:Bool.λc:Bool.if b then true else c", env);
+    p!("eqb", "λb1:Bool.λb2:Bool.if b1 then b2 else not b2", env);
+    p!("neqb", "λb1:Bool.λb2:Bool.if b1 then not b2 else b2", env);
     // p!("pair", "λf.λs.λb. b f s", env);
     // p!("first", "λp. p true", env);
     // p!("second", "λp. p false", env);
 
-    // p!("succ", "λn.λs.λz.s (n s z)", env);
     // p!("plus", "λm.λn.λs.λz.m s (n s z)", env);
     // p!("times", "λm.λn.m (plus n) c0", env);
-    // p!("iszero", "λm.m (λx.false) true", env);
-
-    // p!("zz", "pair c0 c0", env);
-    // p!("ss", "λp.pair (second p) (plus c1 (second p))", env);
-    // p!("pred", "λm. first (m ss zz)", env);
-
-    // p!("equalb", "λp.λq.p q (not q)", env);
 
     Ok(env)
 }

@@ -474,6 +474,21 @@ mod tests {
         check_env(parse("or false true", &env)?, T![true], &env);
         // or false false → false
         check_env(parse("or false false", &env)?, T![false], &env);
+
+        let eq = parse("λb1:Bool.λb2:Bool.if b1 then b2 else not b2", &env)?;
+        env.insert_variable("eq", eq.clone(), type_of(&eq, &env)?);
+        check_env(parse("eq true true", &env)?, T![true], &env);
+        check_env(parse("eq false true", &env)?, T![false], &env);
+        check_env(parse("eq true false", &env)?, T![false], &env);
+        check_env(parse("eq false false", &env)?, T![true], &env);
+
+        let eq = parse("λb1:Bool.λb2:Bool.not (eq b1 b2)", &env)?;
+        env.insert_variable("neq", eq.clone(), type_of(&eq, &env)?);
+        check_env(parse("neq true true", &env)?, T![false], &env);
+        check_env(parse("neq false true", &env)?, T![true], &env);
+        check_env(parse("neq true false", &env)?, T![true], &env);
+        check_env(parse("neq false false", &env)?, T![false], &env);
+
         Ok(())
     }
 
