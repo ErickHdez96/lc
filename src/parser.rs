@@ -42,7 +42,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse(mut self, env: &Env) -> Result<LTerm> {
-        let parsed = self.parse_term(true, env)?;
+        let parsed = self.parse_application_or_var(env)?;
 
         match self.next() {
             t if t.kind != TokenKind::Eof => Err(error!("Expected <eof>, got `{}`", t; t.span)),
@@ -80,17 +80,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_term(&mut self, parse_application: bool, env: &Env) -> Result<LTerm> {
+    fn parse_term(&mut self, env: &Env) -> Result<LTerm> {
         match self.current() {
-            TokenKind::Ident if !parse_application => self.parse_ident(env),
-            TokenKind::Number if !parse_application => self.parse_number(env),
-            TokenKind::Unit if !parse_application => {
+            TokenKind::Ident => self.parse_ident(env),
+            TokenKind::Number => self.parse_number(env),
+            TokenKind::Unit => {
                 self.next();
                 Ok(T![unit])
             }
-            TokenKind::Succ | TokenKind::Pred | TokenKind::IsZero if !parse_application => {
+            TokenKind::Succ | TokenKind::Pred | TokenKind::IsZero => {
                 let t = self.next().kind;
-                let term = self.parse_term(false, &env)?;
+                let term = self.parse_application_or_var(&env)?;
                 Ok(match t {
                     TokenKind::Succ => T![succ term],
                     TokenKind::Pred => T![pred term],
@@ -98,13 +98,12 @@ impl<'a> Parser<'a> {
                 })
             }
             TokenKind::Lambda => self.parse_abstraction(env),
-            TokenKind::LParen if !parse_application => {
+            TokenKind::LParen => {
                 self.bump();
-                let term = self.parse_term(true, env)?;
+                let term = self.parse_application_or_var(env)?;
                 self.eat(TokenKind::RParen)?;
                 Ok(term)
             }
-            TokenKind::LParen => self.parse_application_or_var(env),
             TokenKind::Eof => Err(error!("Expected a term, got `<eof>`"; self.next().span)),
             TokenKind::RParen
             | TokenKind::Error
@@ -114,48 +113,43 @@ impl<'a> Parser<'a> {
             | TokenKind::Else
             | TokenKind::Colon
             | TokenKind::Arrow
-            | TokenKind::Wildcard => {
+            | TokenKind::Wildcard
+            | TokenKind::As => {
                 let t = self.next();
                 Err(error!("Expected a term, got `{}`", t; t.span))
             }
-            TokenKind::True if !parse_application => {
+            TokenKind::True => {
                 self.bump();
                 Ok(T![true])
             }
-            TokenKind::False if !parse_application => {
+            TokenKind::False => {
                 self.bump();
                 Ok(T![false])
             }
             TokenKind::If => {
                 self.bump();
-                let cond = self.parse_term(true, &env)?;
+                let cond = self.parse_application_or_var(&env)?;
                 self.eat(TokenKind::Then)?;
-                let then = self.parse_term(true, &env)?;
+                let then = self.parse_application_or_var(&env)?;
                 self.eat(TokenKind::Else)?;
-                let else_b = self.parse_term(true, &env)?;
+                let else_b = self.parse_application_or_var(&env)?;
                 Ok(T![if cond, then, else_b])
             }
-            TokenKind::Ident
-            | TokenKind::True
-            | TokenKind::False
-            | TokenKind::Succ
-            | TokenKind::Pred
-            | TokenKind::IsZero
-            | TokenKind::Unit
-            | TokenKind::Number => self.parse_application_or_var(env),
         }
     }
 
     fn parse_application_or_var(&mut self, env: &Env) -> Result<LTerm> {
         let mut application_items = vec![];
         while self.current().can_start_term() {
-            let term = self.parse_term(false, &env)?;
+            let term = self.parse_term(&env)?;
+            let term = self.maybe_parse_ascription(term, &env)?;
             application_items.push(term);
         }
-        debug_assert!(
-            !application_items.is_empty(),
-            "At least one term should have been parsed"
-        );
+
+        if application_items.is_empty() {
+            let t = self.next();
+            return Err(error!("Expected a term, got `{}`", t; t.span));
+        }
 
         let mut application_items = application_items.into_iter();
         let t1 = application_items.next().unwrap();
@@ -165,6 +159,17 @@ impl<'a> Parser<'a> {
                 Ok(application_items.fold(T![app t1, t2], |acc, current| T![app acc, current]))
             }
             None => Ok(t1),
+        }
+    }
+
+    fn maybe_parse_ascription(&mut self, t: LTerm, env: &Env) -> Result<LTerm> {
+        match self.current() {
+            TokenKind::As => {
+                self.bump();
+                let ty = self.parse_type(env)?;
+                Ok(T![asc t, ty])
+            }
+            _ => Ok(t),
         }
     }
 
@@ -222,7 +227,7 @@ impl<'a> Parser<'a> {
         self.eat(TokenKind::Period)?;
         let mut env = Env::with_parent(env);
         env.insert_local(ident, ty.clone());
-        let body = self.parse_term(true, &env)?;
+        let body = self.parse_application_or_var(&env)?;
         Ok(T![abs ident, ty, body])
     }
 
@@ -424,5 +429,26 @@ mod tests {
         check("unit", T![unit]);
         check("λx:Nat.unit", T![abs "x", TY![nat], T![unit]]);
         check("λx:Unit.x", T![abs "x", TY![unit], T![var 0]]);
+    }
+
+    #[test]
+    fn test_parse_ascription() {
+        check("true as Bool", T![asc T![true], TY![bool]]);
+        // Correct precedence
+        check("succ 0 as Nat", T![succ T![asc T![0], TY![nat]]]);
+        check("(succ 0) as Nat", T![asc T![succ T![0]], TY![nat]]);
+        check(
+            "λx:Bool.x as Bool",
+            T![abs "x", TY![bool], T![asc T![var 0], TY![bool]]],
+        );
+        check(
+            "(λx:Bool.x) as Bool → Bool",
+            T![asc T![abs "x", TY![bool], T![var 0]], TY![abs TY![bool], TY![bool]]],
+        );
+    }
+
+    #[test]
+    fn error_parse_ascription() {
+        check_error("true as", "Expected a type, got `<eof>`");
     }
 }

@@ -58,6 +58,7 @@ t ::=                   terms:
     pred t                      predecessor
     iszero t                    zero test
     unit                        constant unit
+    t as T                      ascription
 
 v ::=                   values:
     λx:T.t                      abstraction value
@@ -75,6 +76,8 @@ T ::=                   types:
     T → T                       type of functions
     Bool                        type of booleans
     Nat                         type of natural numbers
+    A                           base type
+    Unit                        unit type
 
 Γ ::=                   contexts:
     ∅                           empty context
@@ -82,6 +85,8 @@ T ::=                   types:
 ```
 
 ## Evaluation
+
+`t → t′`
 
 ```
     t₁ → t′₁
@@ -113,9 +118,17 @@ iszero (succ nv₁) → false               E-IsZeroSucc
        t₁ → t′₁
 ----------------------                  E-IsZero
 iszero t₁ → iszero t′₁
+
+v₁ as T → v₁                            E-Ascribe
+
+     t₁ → t′₁
+------------------                      E-Ascribe₁
+t₁ as T → t′₁ as T
 ```
 
-## Typing                                  Γ ⊢ t : T
+## Typing
+
+`Γ ⊢ t : T`
 
 ```
  x:T ∈ Γ
@@ -153,6 +166,10 @@ pred t₁ : Nat
 iszero t₁ : Bool
 
 Γ ⊢ unit: Unit                          T-Unit
+
+  Γ ⊢ t₁ : T
+---------------                         T-Ascribe
+Γ ⊢ t₁ as T : T
 ```
 
 ## Derived forms

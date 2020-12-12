@@ -59,8 +59,11 @@ pub enum TokenKind {
     #[token("iszero")]
     IsZero,
 
-    #[regex("unit")]
+    #[token("unit")]
     Unit,
+
+    #[token("as")]
+    As,
 
     #[regex("[0-9]+")]
     Number,
@@ -145,6 +148,7 @@ impl std::fmt::Display for TokenKind {
                 Succ => "succ",
                 Pred => "pred",
                 Unit => "unit",
+                As => "as",
                 IsZero => "iszero",
                 Number => "<number>",
                 Error => "<unknown char>",
@@ -204,6 +208,7 @@ mod tests {
         check("0", vec![Number]);
         check("10", vec![Number]);
         check("unit", vec![Unit]);
+        check("as", vec![As]);
         check(".", vec![Period]);
         check("(", vec![LParen]);
         check(")", vec![RParen]);

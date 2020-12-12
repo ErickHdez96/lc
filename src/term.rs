@@ -115,6 +115,7 @@ pub enum Term {
     Pred(LTerm),
     IsZero(LTerm),
     Unit,
+    Ascription(LTerm, LTy),
 }
 
 pub type LTerm = Rc<Term>;
@@ -220,6 +221,8 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
                 )),
             }
         }
+        // Type checking is done by type_of
+        Term::Ascription(t, _) => eval(t, env),
     }
 }
 
@@ -290,6 +293,7 @@ where
             Term::Succ(t) => Ok(T![succ map(t, cutoff, on_var)?]),
             Term::Pred(t) => Ok(T![pred map(t, cutoff, on_var)?]),
             Term::IsZero(t) => Ok(T![iszero map(t, cutoff, on_var)?]),
+            Term::Ascription(t, _) => Ok(T![iszero map(t, cutoff, on_var)?]),
             Term::If(cond, then, else_b) => Ok(T![if
                                                map(cond, cutoff, on_var)?,
                                                map(then, cutoff, on_var)?,
@@ -332,6 +336,7 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
         Term::Pred(t) => Ok(format!("pred {}", term_to_string(t, &env)?)),
         Term::Succ(t) => Ok(format!("succ {}", term_to_string(t, &env)?)),
         Term::IsZero(t) => Ok(format!("iszero {}", term_to_string(t, &env)?)),
+        Term::Ascription(t, _) => Ok(format!("{}", term_to_string(t, &env)?)),
         Term::If(c, t, e) => Ok(format!(
             "if {} then {} else {}",
             term_to_string(c, &env)?,
@@ -364,6 +369,9 @@ macro_rules! T {
     };
     (app $t1:expr, $t2:expr $(,)?) => {
         Rc::new(Term::Application($t1.clone(), $t2.clone()))
+    };
+    (asc $t:expr, $ty:expr $(,)?) => {
+        Rc::new(Term::Ascription($t.clone(), $ty.clone()))
     };
     (true $(,)?) => {
         Rc::new(Term::True)
@@ -608,5 +616,15 @@ mod tests {
         check_parse("unit", T![unit]);
         check_parse("(λx:Nat.unit)3", T![unit]);
         check_parse("(λx:Unit.true)unit", T![true]);
+    }
+
+    #[test]
+    fn test_eval_ascription() {
+        check_parse("true as Bool", T![true]);
+        check_parse("0 as Nat", T![0]);
+        check_parse(
+            "(λx:Bool.x) as Bool → Bool",
+            T![abs "x", TY![bool], T![var 0]],
+        );
     }
 }

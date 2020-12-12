@@ -63,13 +63,17 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
         Term::False => Ok(TY![bool]),
         Term::Zero => Ok(TY![nat]),
         Term::Unit => Ok(TY![unit]),
+        Term::Ascription(t, ty) => match type_of(t, &env)?.as_ref() {
+            t if *t == **ty => Ok(ty.clone()),
+            t => Err(error!("Expected type `{}`, got `{}`", ty, t)),
+        },
         Term::Succ(t) | Term::Pred(t) => match type_of(t, &env)?.as_ref() {
             Ty::Nat => Ok(TY![nat]),
-            t => Err(error!("Expected type Nat, got `{}`", t)),
+            t => Err(error!("Expected type `Nat`, got `{}`", t)),
         },
         Term::IsZero(t) => match type_of(t, &env)?.as_ref() {
             Ty::Nat => Ok(TY![bool]),
-            t => Err(error!("Expected type Nat, got `{}`", t)),
+            t => Err(error!("Expected type `Nat`, got `{}`", t)),
         },
         Term::Abstraction(v, ty, body) => {
             let mut env = Env::with_parent(&env);
@@ -88,7 +92,7 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
                     if t11_ty == &t2_ty {
                         Ok(t12_ty.clone())
                     } else {
-                        Err(error!("Expected type {}, got `{}`", t11_ty, t2_ty))
+                        Err(error!("Expected type `{}`, got `{}`", t11_ty, t2_ty))
                     }
                 }
                 _ => Err(error!("Expected an abstraction, got `{}`", t1_ty)),
@@ -190,7 +194,7 @@ mod tests {
     fn test_wrong_application_types() {
         check_parse_error(
             "(λx:Bool.x)(λx:Bool.x)",
-            "Expected type Bool, got `Bool → Bool`",
+            "Expected type `Bool`, got `Bool → Bool`",
         );
         check_parse_error("true λx:Bool.x", "Expected an abstraction, got `Bool`");
         check_parse_error(
@@ -250,15 +254,15 @@ mod tests {
 
     #[test]
     fn error_typecheck_nat() {
-        check_parse_error("pred true", "Expected type Nat, got `Bool`");
-        check_parse_error("succ true", "Expected type Nat, got `Bool`");
+        check_parse_error("pred true", "Expected type `Nat`, got `Bool`");
+        check_parse_error("succ true", "Expected type `Nat`, got `Bool`");
         check_parse_error(
             "succ succ succ pred succ true",
-            "Expected type Nat, got `Bool`",
+            "Expected type `Nat`, got `Bool`",
         );
-        check_parse_error("iszero true", "Expected type Nat, got `Bool`");
-        check_parse_error("pred iszero 0", "Expected type Nat, got `Bool`");
-        check_parse_error("pred iszero true", "Expected type Nat, got `Bool`");
+        check_parse_error("iszero true", "Expected type `Nat`, got `Bool`");
+        check_parse_error("pred iszero 0", "Expected type `Nat`, got `Bool`");
+        check_parse_error("pred iszero true", "Expected type `Nat`, got `Bool`");
         check_parse_error(
             "if 0 then true else false",
             "Guard conditional expects a Bool, got `Nat`",
@@ -279,7 +283,31 @@ mod tests {
 
     #[test]
     fn error_typecheck_unit() {
-        check_parse_error("iszero unit", "Expected type Nat, got `Unit`");
-        check_parse_error("(λx:Nat.unit) unit", "Expected type Nat, got `Unit`");
+        check_parse_error("iszero unit", "Expected type `Nat`, got `Unit`");
+        check_parse_error("(λx:Nat.unit) unit", "Expected type `Nat`, got `Unit`");
+    }
+
+    #[test]
+    fn test_typecheck_ascription() {
+        check_parse("true as Bool", TY![bool]);
+        check_parse("0 as Nat", TY![nat]);
+        check_parse("(λx:Bool.x) as Bool → Bool", TY![abs TY![bool], TY![bool]]);
+    }
+
+    #[test]
+    fn error_typecheck_ascription() {
+        check_parse_error("true as Nat", "Expected type `Nat`, got `Bool`");
+        check_parse_error(
+            "(λx:Bool.x) as Bool → Nat",
+            "Expected type `Bool → Nat`, got `Bool → Bool`",
+        );
+        check_parse_error(
+            "λf:Bool → Bool.λb:Bool.(f as Bool → Nat) b",
+            "Expected type `Bool → Nat`, got `Bool → Bool`",
+        );
+        check_parse_error(
+            "(λf:Bool → Bool.λb:Bool.f b) as Bool → Bool → Bool",
+            "Expected type `Bool → Bool → Bool`, got `(Bool → Bool) → Bool → Bool`",
+        );
     }
 }
