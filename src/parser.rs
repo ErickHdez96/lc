@@ -114,7 +114,9 @@ impl<'a> Parser<'a> {
             | TokenKind::Colon
             | TokenKind::Arrow
             | TokenKind::Wildcard
-            | TokenKind::As => {
+            | TokenKind::As
+            | TokenKind::In
+            | TokenKind::Assign => {
                 let t = self.next();
                 Err(error!("Expected a term, got `{}`", t; t.span))
             }
@@ -134,6 +136,17 @@ impl<'a> Parser<'a> {
                 self.eat(TokenKind::Else)?;
                 let else_b = self.parse_application_or_var(&env)?;
                 Ok(T![if cond, then, else_b])
+            }
+            TokenKind::Let => {
+                self.bump();
+                let (x, _) = self.eat_ident(true)?;
+                self.eat(TokenKind::Assign)?;
+                let t1 = self.parse_application_or_var(&env)?;
+                self.eat(TokenKind::In)?;
+                let mut env = Env::with_parent(&env);
+                env.insert_let_variable(x);
+                let t2 = self.parse_application_or_var(&env)?;
+                Ok(T![let x, t1, t2])
             }
         }
     }
@@ -450,5 +463,23 @@ mod tests {
     #[test]
     fn error_parse_ascription() {
         check_error("true as", "Expected a type, got `<eof>`");
+    }
+
+    #[test]
+    fn test_parse_let_bindings() {
+        check("let x = true in x", T![let "x", T![true], T![var 0]]);
+        check(
+            "let not = λb:Bool.if b then false else true in not true",
+            T![let "not", T![abs "b", TY![bool], T![if T![var 0], T![false], T![true]]], T![app T![var 0], T![true]]],
+        );
+        check(
+            "let x = let y = false in y in x",
+            T![let "x", T![let "y", T![false], T![var 0]], T![var 0]],
+        );
+    }
+
+    #[test]
+    fn error_parse_let_bindings() {
+        check_error("let x = x in x", "Variable `x` not bound");
     }
 }

@@ -98,6 +98,8 @@ macro_rules! error {
 ///     pred t              Predecessor
 ///     iszero t            zero test
 ///     unit                constant unit
+///     t as T              ascription
+///     let x = t in t      let binding
 /// ```
 #[derive(Debug, PartialEq, Eq)]
 pub enum Term {
@@ -116,34 +118,17 @@ pub enum Term {
     IsZero(LTerm),
     Unit,
     Ascription(LTerm, LTy),
+    Let(Symbol, LTerm, LTerm),
 }
 
 pub type LTerm = Rc<Term>;
 
-/// ```text
-/// t ::=                           Terms:
-///     x                               Variable
-///     λx.t                            Abstraction
-///     t t                             Application
-///
-/// v ::=                           Values:
-///     λx.t                            Abstraction Value
-///
-///    t1 → t1'
-/// --------------                      E-App1
-/// t1 t2 → t1' t2
-///
-///    t2 → t2'
-/// --------------                      E-App2
-/// v1 t2 → v1 t2'
-///
-/// (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)    (E-AppAbs)
-/// ```
 pub fn eval(t: &LTerm, env: &Env) -> Result<LTerm> {
     type_of(&t, &env)?;
     eval_(&t, env)
 }
 
+// See NOTES.md for the evaluation rules
 fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
     match t.as_ref() {
         Term::Application(t1, t2) => {
@@ -163,16 +148,7 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
             match v1.as_ref() {
                 // E-AppAbs
                 // (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)
-                Term::Abstraction(_, _, body) => {
-                    // s_v2 = ↑¹(v2)
-                    let shifted_v2 = shift(&v2, 1)?;
-                    // sub = [0 → s_v2]t12
-                    let substitution = substitute(body, 0, shifted_v2)?;
-                    // shi = ↑⁻¹sub
-                    let shifted = shift(&substitution, -1)?;
-                    let evaluation = eval_(&shifted, &env)?;
-                    Ok(evaluation)
-                }
+                Term::Abstraction(_, _, body) => eval_(&term_subst_top(&v2, &body)?, &env),
                 _ => Err(error!(
                     "Expected an abstraction, got {}",
                     term_to_string(t1, &env)?
@@ -222,8 +198,19 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
             }
         }
         // Type checking is done by type_of
-        Term::Ascription(t, _) => eval(t, env),
+        Term::Ascription(t, _) => eval_(t, env),
+        Term::Let(x, t1, t2) => {
+            let t1 = eval_(t1, &env)?;
+            let mut env = Env::with_parent(&env);
+            env.insert_let_term(*x, t1.clone());
+            eval_(&term_subst_top(&t1, &t2)?, &env)
+        }
     }
+}
+
+// (λ.t₁₂)v₂ → ↑⁻¹([0 → ↑¹(v₂)]t₁₂)
+fn term_subst_top(v2: &LTerm, t12: &LTerm) -> Result<LTerm> {
+    shift(&substitute(t12, 0, &shift(v2, 1)?)?, -1)
 }
 
 /// The substitution of a term `s` for variable number `j` in a term `t`,
@@ -235,7 +222,7 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
 /// [j → s](λ.t1) = λ.[j+1 → ↑¹(s)]t1
 /// [j → s](t1 t2) = ([j → s]t1 [j → s]t2)
 /// ```
-fn substitute(t: &LTerm, db_idx: usize, arg: LTerm) -> Result<LTerm> {
+fn substitute(t: &LTerm, db_idx: usize, arg: &LTerm) -> Result<LTerm> {
     term_map(t, 0, |idx, c| {
         if idx == c + db_idx {
             shift(
@@ -294,6 +281,9 @@ where
             Term::Pred(t) => Ok(T![pred map(t, cutoff, on_var)?]),
             Term::IsZero(t) => Ok(T![iszero map(t, cutoff, on_var)?]),
             Term::Ascription(t, _) => Ok(T![iszero map(t, cutoff, on_var)?]),
+            Term::Let(x, t1, t2) => {
+                Ok(T![let *x, map(t1, cutoff, on_var)?, map(t2, cutoff + 1, on_var)?])
+            }
             Term::If(cond, then, else_b) => Ok(T![if
                                                map(cond, cutoff, on_var)?,
                                                map(then, cutoff, on_var)?,
@@ -336,12 +326,18 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
         Term::Pred(t) => Ok(format!("pred {}", term_to_string(t, &env)?)),
         Term::Succ(t) => Ok(format!("succ {}", term_to_string(t, &env)?)),
         Term::IsZero(t) => Ok(format!("iszero {}", term_to_string(t, &env)?)),
-        Term::Ascription(t, _) => Ok(format!("{}", term_to_string(t, &env)?)),
+        Term::Ascription(t, _) => term_to_string(t, &env),
         Term::If(c, t, e) => Ok(format!(
             "if {} then {} else {}",
             term_to_string(c, &env)?,
             term_to_string(t, &env)?,
             term_to_string(e, &env)?,
+        )),
+        Term::Let(x, t1, t2) => Ok(format!(
+            "let {} = {} in {}",
+            x,
+            term_to_string(t1, &env)?,
+            term_to_string(t2, &env)?,
         )),
     }
 }
@@ -396,6 +392,9 @@ macro_rules! T {
     };
     (unit) => {
         Rc::new(Term::Unit)
+    };
+    (let $var:expr, $expr:expr, $body:expr) => {
+        Rc::new(Term::Let($var.into(), $expr.clone(), $body.clone()))
     };
 }
 
@@ -563,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn test_de_bruijn_indices_work() -> Result<()> {
+    fn test_de_bruijn_indices() -> Result<()> {
         let mut env = Env::new();
         let t = parse("λt:Bool.λf:Bool.t", &env)?;
         assert_eq!(term_to_string(&t, &env)?, "λt:Bool.λf:Bool.t");
@@ -625,6 +624,28 @@ mod tests {
         check_parse(
             "(λx:Bool.x) as Bool → Bool",
             T![abs "x", TY![bool], T![var 0]],
+        );
+    }
+
+    #[test]
+    fn test_eval_let_binding() {
+        check_parse("let x = true in true", T![true]);
+        check_parse(
+            "(let not = λb:Bool.if b then false else true in not) true",
+            T![false],
+        );
+        check_parse(
+            r#"let not = λb:Bool.if b then false else true
+                   in let and = λb1:Bool.λb2:Bool.if b1 then b2 else false
+                      in and (not false) (not false)"#,
+            T![true],
+        );
+        check_parse(
+            r#"let not = λb:Bool.if b then false else true
+                   in let and = λb1:Bool.λb2:Bool.if b1 then b2 else false
+                      in let nand = λb1:Bool.λb2:Bool.not (and b1 b2)
+                         in nand false false"#,
+            T![true],
         );
     }
 }

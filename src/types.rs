@@ -114,6 +114,12 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
             }
             ty => Err(error!("Guard conditional expects a Bool, got `{}`", ty)),
         },
+        Term::Let(x, t1, t2) => {
+            let t1 = type_of(t1, &env)?;
+            let mut env = Env::with_parent(&env);
+            env.insert_local(*x, t1);
+            type_of(t2, &env)
+        }
     }
 }
 
@@ -308,6 +314,28 @@ mod tests {
         check_parse_error(
             "(λf:Bool → Bool.λb:Bool.f b) as Bool → Bool → Bool",
             "Expected type `Bool → Bool → Bool`, got `(Bool → Bool) → Bool → Bool`",
+        );
+    }
+
+    #[test]
+    fn test_typecheck_let_bindings() {
+        check_parse("let x = true in x", TY![bool]);
+        check_parse(
+            "let not = λb:Bool.if b then false else true in not true",
+            TY![bool],
+        );
+        check_parse(
+            "let not = λb:Bool.if b then false else true in not",
+            TY![abs TY![bool], TY![bool]],
+        );
+    }
+
+    #[test]
+    fn error_typecheck_let_bindings() {
+        check_parse_error("let x = true in succ x", "Expected type `Nat`, got `Bool`");
+        check_parse_error(
+            "let not = λb:Bool.if b then false else true in not 0",
+            "Expected type `Bool`, got `Nat`",
         );
     }
 }

@@ -59,6 +59,7 @@ t ::=                   terms:
     iszero t                    zero test
     unit                        constant unit
     t as T                      ascription
+    let x = t in t              let binding
 
 v ::=                   values:
     λx:T.t                      abstraction value
@@ -124,6 +125,12 @@ v₁ as T → v₁                            E-Ascribe
      t₁ → t′₁
 ------------------                      E-Ascribe₁
 t₁ as T → t′₁ as T
+
+let x = v₁ in t₂ → [x ↦ v₁]t₂           E-LetV
+
+              t1 → t′₁
+------------------------------------    E-Let
+let x = t₁ in t₂ → let x = t′₁ in t₂
 ```
 
 ## Typing
@@ -170,6 +177,10 @@ iszero t₁ : Bool
   Γ ⊢ t₁ : T
 ---------------                         T-Ascribe
 Γ ⊢ t₁ as T : T
+
+Γ ⊢ t₁ : T₁     Γ,x:T₁ ⊢ t₂ : T₂
+--------------------------------        T-Let
+    Γ ⊢ let x = t₁ in t₂ : T₂
 ```
 
 ## Derived forms

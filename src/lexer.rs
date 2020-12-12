@@ -65,6 +65,12 @@ pub enum TokenKind {
     #[token("as")]
     As,
 
+    #[token("let")]
+    Let,
+
+    #[token("in")]
+    In,
+
     #[regex("[0-9]+")]
     Number,
 
@@ -85,6 +91,9 @@ pub enum TokenKind {
 
     #[regex("(→|->)")]
     Arrow,
+
+    #[token("=")]
+    Assign,
 
     #[regex("_")]
     Wildcard,
@@ -110,6 +119,7 @@ impl TokenKind {
                 | TokenKind::Pred
                 | TokenKind::Succ
                 | TokenKind::Unit
+                | TokenKind::Let
         )
     }
 }
@@ -144,11 +154,14 @@ impl std::fmt::Display for TokenKind {
                 RParen => ")",
                 Colon => ":",
                 Arrow => "→",
+                Assign => "=",
                 Wildcard => "_",
                 Succ => "succ",
                 Pred => "pred",
                 Unit => "unit",
                 As => "as",
+                Let => "let",
+                In => "in",
                 IsZero => "iszero",
                 Number => "<number>",
                 Error => "<unknown char>",
@@ -209,10 +222,13 @@ mod tests {
         check("10", vec![Number]);
         check("unit", vec![Unit]);
         check("as", vec![As]);
+        check("let", vec![Let]);
+        check("in", vec![In]);
         check(".", vec![Period]);
         check("(", vec![LParen]);
         check(")", vec![RParen]);
         check(":", vec![Colon]);
+        check("=", vec![Assign]);
         check(
             "(λx.x) y",
             vec![LParen, Lambda, Ident, Period, Ident, RParen, Ident],

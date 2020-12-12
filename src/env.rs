@@ -88,6 +88,14 @@ impl<'a> Env<'a> {
         self.types.push(ty);
     }
 
+    pub fn insert_let_term(&mut self, k: impl Into<Symbol>, t: LTerm) {
+        let k = k.into();
+        let db_idx = self.vars.len();
+        self.context.insert(k, db_idx);
+        self.vars.push(t);
+        self.names.push(k);
+    }
+
     pub fn insert_variable(&mut self, k: impl Into<Symbol>, t: LTerm, ty: LTy) {
         let k = k.into();
         let db_idx = self.vars.len();
@@ -95,6 +103,13 @@ impl<'a> Env<'a> {
         self.vars.push(t);
         self.names.push(k);
         self.types.push(ty);
+    }
+
+    pub fn insert_let_variable(&mut self, k: impl Into<Symbol>) {
+        let db_idx = self.context.len();
+        let k = k.into();
+        self.context.insert(k, db_idx);
+        self.names.push(k);
     }
 
     /// Get the de Bruijn index of the term pointed to by `name`.
