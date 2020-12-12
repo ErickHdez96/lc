@@ -1,4 +1,4 @@
-use lc::{env::base_env, parser::parse, term::eval};
+use lc::{env::base_env, parser::parse, print_error, term::eval};
 use lc::{term::term_to_string, types::type_of};
 use log::{error, warn};
 use rustyline::{error::ReadlineError, Editor};
@@ -29,7 +29,7 @@ pub fn run_repl() {
                         .and_then(|p| Ok((term_to_string(&p, &env)?, type_of(&p, &env)?)))
                     {
                         Ok((term, ty)) => println!("{} : {}", term, ty),
-                        Err(e) => eprintln!("{}", e),
+                        Err(e) => print_error(&e, line),
                     }
                 }
             },
