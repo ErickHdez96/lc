@@ -120,3 +120,8 @@ false : Bool
 
 * Allow user defined variables.
 * Add better error messages
+* Records
+* Sums
+* Variants
+* General Recursion
+* Lists
