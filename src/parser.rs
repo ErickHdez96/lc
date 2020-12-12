@@ -116,7 +116,9 @@ impl<'a> Parser<'a> {
             | TokenKind::Wildcard
             | TokenKind::As
             | TokenKind::In
-            | TokenKind::Assign => {
+            | TokenKind::Assign
+            | TokenKind::RBrace
+            | TokenKind::Comma => {
                 let t = self.next();
                 Err(error!("Expected a term, got `{}`", t; t.span))
             }
@@ -148,6 +150,32 @@ impl<'a> Parser<'a> {
                 let t2 = self.parse_application_or_var(&env)?;
                 Ok(T![let x, t1, t2])
             }
+            TokenKind::LBrace => {
+                self.bump();
+                let mut terms = Vec::new();
+                let mut comma_consumed = true;
+
+                while self.current().can_start_term() {
+                    terms.push(self.parse_application_or_var(&env)?);
+                    if self.current() != TokenKind::Comma {
+                        comma_consumed = false;
+                        break;
+                    }
+                    self.eat(TokenKind::Comma)?;
+                    comma_consumed = true;
+                }
+
+                match self.current() {
+                    TokenKind::RBrace => self.bump(),
+                    k => {
+                        return Err(
+                            error!("Expected {} or `}}`, got `{}`", if comma_consumed { "a term" } else { "`,`" }, k; self.next().span),
+                        )
+                    }
+                }
+
+                Ok(Rc::new(Term::Tuple(terms)))
+            }
         }
     }
 
@@ -155,7 +183,7 @@ impl<'a> Parser<'a> {
         let mut application_items = vec![];
         while self.current().can_start_term() {
             let term = self.parse_term(&env)?;
-            let term = self.maybe_parse_ascription(term, &env)?;
+            let term = self.parse_post_term(term, &env)?;
             application_items.push(term);
         }
 
@@ -175,23 +203,39 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn maybe_parse_ascription(&mut self, t: LTerm, env: &Env) -> Result<LTerm> {
-        match self.current() {
-            TokenKind::As => {
-                self.bump();
-                let ty = self.parse_type(env)?;
-                Ok(T![asc t, ty])
+    fn parse_post_term(&mut self, mut t: LTerm, env: &Env) -> Result<LTerm> {
+        loop {
+            match self.current() {
+                TokenKind::Period => {
+                    self.bump();
+                    let elem = self.eat_number()?;
+                    t = T![proj t, elem];
+                }
+                TokenKind::As => {
+                    self.bump();
+                    let ty = self.parse_type(env)?;
+                    t = T![asc t, ty];
+                }
+                _ => break,
             }
-            _ => Ok(t),
+        }
+        Ok(t)
+    }
+
+    fn eat_number(&mut self) -> Result<usize> {
+        match self.current() {
+            TokenKind::Number => {
+                let t = self.next();
+                t.text
+                    .parse::<usize>()
+                    .map_err(|_| error!("Number too large"; t.span))
+            }
+            k => Err(error!("Expected a number, got `{}`", k; self.next().span)),
         }
     }
 
     fn parse_number(&mut self, _env: &Env) -> Result<LTerm> {
-        let t = self.next();
-        let n = t
-            .text
-            .parse::<u64>()
-            .map_err(|_| error!("Number too large"; t.span))?;
+        let n = self.eat_number()?;
 
         let mut number = T![0];
         for _ in 0..n {
@@ -258,6 +302,32 @@ impl<'a> Parser<'a> {
                 "Unit" => Rc::new(Ty::Unit),
                 text => Rc::new(Ty::Base(text.into())),
             },
+            TokenKind::LBrace => {
+                self.bump();
+                let mut types = Vec::new();
+                let mut comma_consumed = true;
+
+                while self.current().can_start_term() {
+                    types.push(self.parse_type(&env)?);
+                    if self.current() != TokenKind::Comma {
+                        comma_consumed = false;
+                        break;
+                    }
+                    self.eat(TokenKind::Comma)?;
+                    comma_consumed = true;
+                }
+
+                match self.current() {
+                    TokenKind::RBrace => self.bump(),
+                    k => {
+                        return Err(
+                            error!("Expected {} or `}}`, got `{}`", if comma_consumed { "a type" } else { "`,`" }, k; self.next().span),
+                        )
+                    }
+                }
+
+                Rc::new(Ty::Tuple(types))
+            }
             _ => {
                 let t = self.next();
                 return Err(error!("Expected a type, got `{}`", t; t.span));
@@ -481,5 +551,73 @@ mod tests {
     #[test]
     fn error_parse_let_bindings() {
         check_error("let x = x in x", "Variable `x` not bound");
+    }
+
+    #[test]
+    fn test_parse_tuple() {
+        check("{}", T![tuple]);
+        check("{true}", T![tuple T![true]]);
+        check(
+            "{λ_:Bool.true, λ_:Bool.false}",
+            T![tuple T![abs "_", TY![bool], T![true]], T![abs "_", TY![bool], T![false]]],
+        );
+        check(
+            "{(λb:Bool.b) true}",
+            T![tuple T![app T![abs "b", TY![bool], T![var 0]], T![true]]],
+        );
+        check("{true, false}", T![tuple T![true], T![false]]);
+        check("{succ 0}", T![tuple T![succ T![0]]]);
+        check(
+            "{0, 1, 2}",
+            T![tuple T![0], T![succ T![0]], T![succ T![succ T![0]]]],
+        );
+        check(
+            "{{unit, unit}, {unit}}",
+            T![tuple T![tuple T![unit], T![unit]], T![tuple T![unit]]],
+        );
+        // We accept trailing commas
+        check("{0,}", T![tuple T![0]]);
+
+        check(
+            "λt:{Bool, Bool}.t",
+            T![abs "t", TY![tuple TY![bool], TY![bool]], T![var 0]],
+        );
+        check(
+            "λt:{{Unit, Unit}, Bool}.t",
+            T![abs "t", TY![tuple TY![tuple TY![unit], TY![unit]], TY![bool]], T![var 0]],
+        );
+        check("λt:{}.t", T![abs "t", TY![tuple], T![var 0]]);
+    }
+
+    #[test]
+    fn error_parse_tuple() {
+        check_error("{", "Expected a term or `}`, got `<eof>`");
+        check_error("{true", "Expected `,` or `}`, got `<eof>`");
+        check_error("{true,", "Expected a term or `}`, got `<eof>`");
+        check_error("{true,,", "Expected a term or `}`, got `,`");
+        check_error("{true ) true}", "Expected `,` or `}`, got `)`");
+        check_error("λt:{", "Expected a type or `}`, got `<eof>`");
+        check_error("λt:{Bool", "Expected `,` or `}`, got `<eof>`");
+    }
+
+    #[test]
+    fn test_parse_tuple_projection() {
+        check("{true}.1", T![proj T![tuple T![true]], 1]);
+        check(
+            "{} as {Bool, Bool}.1 as Bool",
+            T![asc T![proj T![asc T![tuple], TY![tuple TY![bool], TY![bool]]], 1], TY![bool]],
+        );
+        check(
+            "{true}.1 as Bool",
+            T![asc T![proj T![tuple T![true]], 1], TY![bool]],
+        );
+        check(
+            "{{true, unit}.1, 0}.2 as Nat",
+            T![asc T![proj T![tuple T![proj T![tuple T![true], T![unit]], 1], T![0]], 2], TY![nat]],
+        );
+        check(
+            "{{true, unit}.1, 0}.1.1",
+            T![proj T![proj T![tuple T![proj T![tuple T![true], T![unit]], 1], T![0]], 1], 1],
+        );
     }
 }

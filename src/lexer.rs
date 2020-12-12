@@ -80,11 +80,20 @@ pub enum TokenKind {
     #[token(".")]
     Period,
 
+    #[token(",")]
+    Comma,
+
     #[token("(")]
     LParen,
 
     #[token(")")]
     RParen,
+
+    #[token("{")]
+    LBrace,
+
+    #[token("}")]
+    RBrace,
 
     #[token(":")]
     Colon,
@@ -120,6 +129,7 @@ impl TokenKind {
                 | TokenKind::Succ
                 | TokenKind::Unit
                 | TokenKind::Let
+                | TokenKind::LBrace
         )
     }
 }
@@ -150,8 +160,11 @@ impl std::fmt::Display for TokenKind {
                 Else => "else",
                 Ident => "<ident>",
                 Period => ".",
+                Comma => ",",
                 LParen => "(",
                 RParen => ")",
+                LBrace => "{",
+                RBrace => "}",
                 Colon => ":",
                 Arrow => "→",
                 Assign => "=",
@@ -225,8 +238,11 @@ mod tests {
         check("let", vec![Let]);
         check("in", vec![In]);
         check(".", vec![Period]);
+        check(",", vec![Comma]);
         check("(", vec![LParen]);
         check(")", vec![RParen]);
+        check("{", vec![LBrace]);
+        check("}", vec![RBrace]);
         check(":", vec![Colon]);
         check("=", vec![Assign]);
         check(

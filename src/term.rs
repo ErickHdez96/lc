@@ -119,6 +119,8 @@ pub enum Term {
     Unit,
     Ascription(LTerm, LTy),
     Let(Symbol, LTerm, LTerm),
+    Tuple(Vec<LTerm>),
+    Projection(LTerm, usize),
 }
 
 pub type LTerm = Rc<Term>;
@@ -205,6 +207,26 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
             env.insert_let_term(*x, t1.clone());
             eval_(&term_subst_top(&t1, &t2)?, &env)
         }
+        Term::Tuple(elems) => elems
+            .iter()
+            .map(|e| eval_(e, &env))
+            .collect::<Result<Vec<_>>>()
+            .map(|elems| Rc::new(Term::Tuple(elems))),
+        Term::Projection(t, i) => {
+            let t = eval_(t, &env)?;
+            if *i == 0 {
+                return Err(error!(
+                    "Cannot access a tuple with `0`, projections start from `1`"
+                ));
+            }
+            match t.as_ref() {
+                Term::Tuple(elems) => match elems.get(*i - 1) {
+                    Some(e) => Ok(e.clone()),
+                    None => Err(error!("Couldn't get element `{}` from tuple", i)),
+                },
+                _ => Err(error!("Projections can only be done over tuples")),
+            }
+        }
     }
 }
 
@@ -281,6 +303,11 @@ where
             Term::Pred(t) => Ok(T![pred map(t, cutoff, on_var)?]),
             Term::IsZero(t) => Ok(T![iszero map(t, cutoff, on_var)?]),
             Term::Ascription(t, _) => Ok(T![iszero map(t, cutoff, on_var)?]),
+            Term::Tuple(elems) => elems
+                .iter()
+                .map(|e| map(e, cutoff, on_var))
+                .collect::<Result<Vec<_>>>()
+                .map(|elems| Rc::new(Term::Tuple(elems))),
             Term::Let(x, t1, t2) => {
                 Ok(T![let *x, map(t1, cutoff, on_var)?, map(t2, cutoff + 1, on_var)?])
             }
@@ -289,6 +316,7 @@ where
                                                map(then, cutoff, on_var)?,
                                                map(else_b, cutoff, on_var)?,
             ]),
+            Term::Projection(t, i) => Ok(T![proj map(t, cutoff, on_var)?, *i]),
         }
     }
     map(t, cutoff, &on_var)
@@ -339,6 +367,15 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
             term_to_string(t1, &env)?,
             term_to_string(t2, &env)?,
         )),
+        Term::Tuple(elems) => Ok(format!(
+            "{{{}}}",
+            elems
+                .iter()
+                .map(|e| term_to_string(e, &env))
+                .collect::<Result<Vec<_>>>()?
+                .join(", ")
+        )),
+        Term::Projection(t, i) => Ok(format!("{}.{}", term_to_string(t, &env)?, i,)),
     }
 }
 
@@ -395,6 +432,12 @@ macro_rules! T {
     };
     (let $var:expr, $expr:expr, $body:expr) => {
         Rc::new(Term::Let($var.into(), $expr.clone(), $body.clone()))
+    };
+    (tuple $($term:expr),*) => {
+        Rc::new(Term::Tuple(vec![$($term.clone()),*]))
+    };
+    (proj $term:expr, $elem:expr) => {
+        Rc::new(Term::Projection($term.clone(), $elem))
     };
 }
 
@@ -647,5 +690,16 @@ mod tests {
                          in nand false false"#,
             T![true],
         );
+    }
+
+    #[test]
+    fn test_eval_tuple() {
+        check_parse("{true, true}", T![tuple T![true], T![true]]);
+        check_parse(
+            "{(λb:Bool.b) true, (λb:Bool.b) true}",
+            T![tuple T![true], T![true]],
+        );
+        check_parse("{true}.1", T![true]);
+        check_parse("(λt:{Bool,Bool}.t.1) {false, true}", T![false]);
     }
 }

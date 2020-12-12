@@ -6,7 +6,7 @@ type Result<T> = std::result::Result<T, Error>;
 macro_rules! error {
     ($msg:expr, $($arg:expr),*) => {
         // FIXME: Add correct span info
-        Error::new(format!($msg, $($arg),+), Span::new(0, 0), ErrorKind::Type)
+        Error::new(format!($msg, $($arg),*), Span::new(0, 0), ErrorKind::Type)
     };
     ($msg:expr) => {
         error!($msg,)
@@ -28,6 +28,7 @@ pub enum Ty {
     Unit,
     Base(Symbol),
     Abstraction(LTy, LTy),
+    Tuple(Vec<LTy>),
 }
 
 pub type LTy = Rc<Ty>;
@@ -52,6 +53,17 @@ impl fmt::Display for Ty {
                     ("", "")
                 };
                 write!(f, "{}{}{} → {}", l_paren, t1, r_paren, t2)
+            }
+            Self::Tuple(elems) => {
+                write!(
+                    f,
+                    "{{{}}}",
+                    elems
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             }
         }
     }
@@ -120,6 +132,29 @@ pub fn type_of(t: &LTerm, env: &Env) -> Result<LTy> {
             env.insert_local(*x, t1);
             type_of(t2, &env)
         }
+        Term::Tuple(elems) => elems
+            .iter()
+            .map(|e| type_of(e, &env))
+            .collect::<Result<Vec<_>>>()
+            .map(|elems| Rc::new(Ty::Tuple(elems))),
+        Term::Projection(tuple, elem_no) => {
+            let tuple = type_of(tuple, &env)?;
+            if *elem_no == 0 {
+                return Err(error!(
+                    "Cannot access a tuple with `0`, projections start from `1`"
+                ));
+            }
+            match tuple.as_ref() {
+                Ty::Tuple(elems) => match elems.get(*elem_no - 1) {
+                    Some(elem) => Ok(elem.clone()),
+                    None => Err(error!(
+                        "The element `{}` does not exist on the tuple `{}`",
+                        elem_no, tuple
+                    )),
+                },
+                _ => Err(error!("Only a tuple can be projected, got `{}`", tuple)),
+            }
+        }
     }
 }
 
@@ -139,6 +174,9 @@ macro_rules! TY {
     };
     (abs $t1:expr, $t2:expr) => {
         Rc::new(Ty::Abstraction($t1.clone(), $t2.clone()))
+    };
+    (tuple $($term:expr),*) => {
+        Rc::new(Ty::Tuple(vec![$($term.clone()),*]))
     };
 }
 
@@ -336,6 +374,28 @@ mod tests {
         check_parse_error(
             "let not = λb:Bool.if b then false else true in not 0",
             "Expected type `Bool`, got `Nat`",
+        );
+    }
+
+    #[test]
+    fn test_typecheck_tuple() {
+        check_parse("{true, true}", TY![tuple TY![bool], TY![bool]]);
+        check_parse("{0, unit}.2", TY![unit]);
+        check_parse("{0, unit}.1", TY![nat]);
+    }
+
+    #[test]
+    fn error_typecheck_tuple() {
+        check_parse_error(
+            "{true, 0} as {Bool, Bool}",
+            "Expected type `{Bool, Bool}`, got `{Bool, Nat}`",
+        );
+        check_parse_error("{0}.1 as Bool", "Expected type `Bool`, got `Nat`");
+        check_parse_error("{{unit}}.1.1 as Bool", "Expected type `Bool`, got `Unit`");
+        check_parse_error("{} as Bool", "Expected type `Bool`, got `{}`");
+        check_parse_error(
+            "{true}.0",
+            "Cannot access a tuple with `0`, projections start from `1`",
         );
     }
 }

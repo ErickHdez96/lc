@@ -4,6 +4,10 @@ U+2209 = ∉
 
 U+21A6 = ↦
 
+U+1D62 = ᵢ
+U+2C7C = ⱼ
+U+2096 = ₖ
+
 U+2081 = ₁
 U+2082 = ₂
 
@@ -12,7 +16,7 @@ U+00B2 = ²
 U+00B3 = ³
 
 U+2070 = ⁰
-U+2071 = ⁱ
+U+2071 = ⁱ (superscript i)
 
 <C-k>1' = ′ (prime)
 <C-k>l* = λ
@@ -60,6 +64,8 @@ t ::=                   terms:
     unit                        constant unit
     t as T                      ascription
     let x = t in t              let binding
+    { tᵢ (i∈1..n) }             tuple
+    t.i                         projection
 
 v ::=                   values:
     λx:T.t                      abstraction value
@@ -67,6 +73,7 @@ v ::=                   values:
     false                       false value
     nv                          numeric value
     unit                        constant unit
+    { vᵢ (i∈1..n) }             tuple value
 
 nv ::=                  numeric values:
     0                           zero value
@@ -79,6 +86,7 @@ T ::=                   types:
     Nat                         type of natural numbers
     A                           base type
     Unit                        unit type
+    { Tᵢ (i∈1..n) }             tuple type
 
 Γ ::=                   contexts:
     ∅                           empty context
@@ -131,6 +139,17 @@ let x = v₁ in t₂ → [x ↦ v₁]t₂           E-LetV
               t1 → t′₁
 ------------------------------------    E-Let
 let x = t₁ in t₂ → let x = t′₁ in t₂
+
+{ vᵢ (i∈1..n) }.j → vⱼ                  E-ProjTuple
+
+  t₁ → t′₁
+------------                            E-Proj
+t₁.i → t′₁.i
+
+                tⱼ → t′ⱼ
+--------------------------------------  E-Tuple (Tuples' elements are evaluated from left to right)
+{ vᵢ (i∈1..j-1), tⱼ, tₖ (k∈j+1..n) } →
+{ vᵢ (i∈1..j-1), t′ⱼ, tₖ (k∈j+1..n) }
 ```
 
 ## Typing
@@ -181,6 +200,14 @@ iszero t₁ : Bool
 Γ ⊢ t₁ : T₁     Γ,x:T₁ ⊢ t₂ : T₂
 --------------------------------        T-Let
     Γ ⊢ let x = t₁ in t₂ : T₂
+
+   for each i      Γ ⊢ tᵢ : Tᵢ
+---------------------------------       T-Tuple
+Γ ⊢ {tᵢ (i∈1..n)} : {Tᵢ (i∈1..n)}
+
+Γ ⊢ t₁ : {Tᵢ (i∈1..n)}
+----------------------                  T-Proj
+     Γ ⊢ t₁.j : Tⱼ
 ```
 
 ## Derived forms
