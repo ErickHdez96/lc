@@ -12,4 +12,4 @@ pub use error::{print_error, Error, ErrorKind};
 pub use parser::parse;
 pub use span::Span;
 pub use string_interner::Symbol;
-pub use term::{LTerm, Term};
+pub use term::{LTerm, Term, TermKind};

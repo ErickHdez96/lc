@@ -76,12 +76,11 @@ use std::rc::Rc;
 type Result<T> = std::result::Result<T, Error>;
 
 macro_rules! error {
-    ($msg:expr, $($arg:expr),*) => {
-        // FIXME: Add correct span info
-        Error::new(format!($msg, $($arg),*), Span::new(0, 0), ErrorKind::Runtime)
+    ($msg:expr; $span:expr) => {
+        error!($msg,; $span)
     };
-    ($msg:expr) => {
-        error!($msg,)
+    ($msg:expr, $($arg:expr),*; $span:expr) => {
+        Error::new(format!($msg, $($arg),*), $span, ErrorKind::Runtime)
     };
 }
 
@@ -101,8 +100,20 @@ macro_rules! error {
 ///     t as T              ascription
 ///     let x = t in t      let binding
 /// ```
-#[derive(Debug, PartialEq, Eq)]
-pub enum Term {
+#[derive(Debug, Eq)]
+pub struct Term {
+    pub span: Span,
+    pub kind: TermKind,
+}
+
+impl PartialEq for Term {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TermKind {
     /// x
     Variable(/** de Bruijn index */ usize),
     /// λx.t
@@ -131,9 +142,9 @@ pub fn eval(t: &LTerm, env: &Env) -> Result<LTerm> {
 }
 
 // See NOTES.md for the evaluation rules
-fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
-    match t.as_ref() {
-        Term::Application(t1, t2) => {
+fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
+    match eval_t.as_ref().kind {
+        TermKind::Application(ref t1, ref t2) => {
             //    t1 → t1'
             // --------------
             // t1 t2 → t1' t2
@@ -147,84 +158,98 @@ fn eval_(t: &LTerm, env: &Env) -> Result<LTerm> {
             // We evaluate t2
             // E-App2
             let v2 = eval_(t2, env)?;
-            match v1.as_ref() {
+            match v1.as_ref().kind {
                 // E-AppAbs
                 // (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)
-                Term::Abstraction(_, _, body) => eval_(&term_subst_top(&v2, &body)?, &env),
+                TermKind::Abstraction(_, _, ref body) => eval_(&term_subst_top(&v2, &body)?, &env),
                 _ => Err(error!(
                     "Expected an abstraction, got {}",
-                    term_to_string(t1, &env)?
+                    term_to_string(t1, &env)?;
+                    v1.span
                 )),
             }
         }
-        Term::Variable(idx) => env
-            .get_from_db_index(*idx)
-            .ok_or_else(|| error!("Invalid de Bruijn index: {}", idx)),
+        TermKind::Variable(idx) => env
+            .get_from_db_index(idx)
+            .ok_or_else(|| error!("Invalid de Bruijn index: {}", idx; eval_t.span)),
         // Evaluating an abstraction, yields the abstraction itself.
-        Term::If(cond, then, else_b) => {
+        TermKind::If(ref cond, ref then, ref else_b) => {
             let cond = eval_(cond, &env)?;
 
-            match cond.as_ref() {
-                Term::True => eval_(then, &env),
-                Term::False => eval_(else_b, &env),
+            match cond.as_ref().kind {
+                TermKind::True => eval_(then, &env),
+                TermKind::False => eval_(else_b, &env),
                 _ => Err(error!(
                     "Expected a boolean, got `{}`",
-                    term_to_string(&cond, &env)?
+                    term_to_string(&cond, &env)?;
+                    cond.span
                 )),
             }
         }
-        Term::Abstraction(_, _, _) | Term::True | Term::False | Term::Zero | Term::Unit => {
-            Ok(t.clone())
-        }
-        Term::Succ(t) => Ok(T![succ eval_(t, &env)?]),
-        Term::Pred(t) => {
+        TermKind::Abstraction(_, _, _)
+        | TermKind::True
+        | TermKind::False
+        | TermKind::Zero
+        | TermKind::Unit => Ok(eval_t.clone()),
+        TermKind::Succ(ref t) => {
             let t = eval_(t, &env)?;
-            match t.as_ref() {
-                Term::Zero => Ok(T![0]),
-                Term::Succ(t) => Ok(t.clone()),
+            Ok(T![succ t; eval_t.span])
+        }
+        TermKind::Pred(ref t) => {
+            let t = eval_(t, &env)?;
+            match t.as_ref().kind {
+                TermKind::Zero => Ok(T![0; eval_t.span]),
+                TermKind::Succ(ref t) => Ok(t.clone()),
                 _ => Err(error!(
                     "Expected a numeric value, got `{}`",
-                    term_to_string(&t, &env)?
+                    term_to_string(&t, &env)?;
+                    t.span
                 )),
             }
         }
-        Term::IsZero(t) => {
+        TermKind::IsZero(ref t) => {
             let t = eval_(t, &env)?;
-            match t.as_ref() {
-                Term::Zero => Ok(T![true]),
-                Term::Succ(_) => Ok(T![false]),
+            match t.as_ref().kind {
+                TermKind::Zero => Ok(T![true; eval_t.span]),
+                TermKind::Succ(_) => Ok(T![false; eval_t.span]),
                 _ => Err(error!(
                     "Expected a numeric value, got `{}`",
-                    term_to_string(&t, &env)?
+                    term_to_string(&t, &env)?;
+                    t.span
                 )),
             }
         }
         // Type checking is done by type_of
-        Term::Ascription(t, _) => eval_(t, env),
-        Term::Let(x, t1, t2) => {
+        TermKind::Ascription(ref t, _) => eval_(t, env),
+        TermKind::Let(x, ref t1, ref t2) => {
             let t1 = eval_(t1, &env)?;
             let mut env = Env::with_parent(&env);
-            env.insert_let_term(*x, t1.clone());
+            env.insert_let_term(x, t1.clone());
             eval_(&term_subst_top(&t1, &t2)?, &env)
         }
-        Term::Tuple(elems) => elems
+        TermKind::Tuple(ref elems) => elems
             .iter()
             .map(|e| eval_(e, &env))
             .collect::<Result<Vec<_>>>()
-            .map(|elems| Rc::new(Term::Tuple(elems))),
-        Term::Projection(t, i) => {
+            .map(|elems| {
+                Rc::new(Term {
+                    kind: TermKind::Tuple(elems),
+                    span: eval_t.span,
+                })
+            }),
+        TermKind::Projection(ref t, i) => {
             let t = eval_(t, &env)?;
-            if *i == 0 {
+            if i == 0 {
                 return Err(error!(
-                    "Cannot access a tuple with `0`, projections start from `1`"
+                    "Cannot access a tuple with `0`, projections start from `1`"; eval_t.span
                 ));
             }
-            match t.as_ref() {
-                Term::Tuple(elems) => match elems.get(*i - 1) {
+            match t.as_ref().kind {
+                TermKind::Tuple(ref elems) => match elems.get(i - 1) {
                     Some(e) => Ok(e.clone()),
-                    None => Err(error!("Couldn't get element `{}` from tuple", i)),
+                    None => Err(error!("Couldn't get element `{}` from tuple", i; eval_t.span)),
                 },
-                _ => Err(error!("Projections can only be done over tuples")),
+                _ => Err(error!("Projections can only be done over tuples"; eval_t.span)),
             }
         }
     }
@@ -249,10 +274,10 @@ fn substitute(t: &LTerm, db_idx: usize, arg: &LTerm) -> Result<LTerm> {
         if idx == c + db_idx {
             shift(
                 &arg,
-                isize::try_from(c).map_err(|_| error!("Too many bindings"))?,
+                isize::try_from(c).map_err(|_| error!("Too many bindings"; t.span))?,
             )
         } else {
-            Ok(T![var idx])
+            Ok(T![var idx; t.span])
         }
     })
 }
@@ -269,12 +294,13 @@ fn substitute(t: &LTerm, db_idx: usize, arg: &LTerm) -> Result<LTerm> {
 fn shift_above(t: &LTerm, d_place: isize, cutoff: usize) -> Result<LTerm> {
     term_map(t, cutoff, |idx, c| {
         Ok(if idx >= c {
-            let idx = isize::try_from(idx).map_err(|_| error!("Too many bindings"))? + d_place;
+            let idx =
+                isize::try_from(idx).map_err(|_| error!("Too many bindings"; t.span))? + d_place;
             let new_idx = usize::try_from(idx)
-                .map_err(|_| error!("Invalid negative de Bruijn index calculated"))?;
-            T![var new_idx]
+                .map_err(|_| error!("Invalid negative de Bruijn index calculated"; t.span))?;
+            T![var new_idx; t.span]
         } else {
-            T![var idx]
+            T![var idx; t.span]
         })
     })
 }
@@ -292,49 +318,56 @@ where
         cutoff: usize,
         on_var: &F,
     ) -> Result<LTerm> {
-        match t.as_ref() {
-            Term::Variable(idx) => on_var(*idx, cutoff),
-            Term::Abstraction(v, ty, body) => Ok(T![abs(*v), ty, map(body, cutoff + 1, on_var)?]),
-            Term::Application(t1, t2) => {
-                Ok(T![app map(t1, cutoff, on_var)?, map(t2, cutoff, on_var)?])
+        match t.as_ref().kind {
+            TermKind::Variable(idx) => on_var(idx, cutoff),
+            TermKind::Abstraction(v, ref ty, ref body) => {
+                Ok(T![abs(v), ty, map(body, cutoff + 1, on_var)?; t.span])
             }
-            Term::True | Term::False | Term::Zero | Term::Unit => Ok(t.clone()),
-            Term::Succ(t) => Ok(T![succ map(t, cutoff, on_var)?]),
-            Term::Pred(t) => Ok(T![pred map(t, cutoff, on_var)?]),
-            Term::IsZero(t) => Ok(T![iszero map(t, cutoff, on_var)?]),
-            Term::Ascription(t, _) => Ok(T![iszero map(t, cutoff, on_var)?]),
-            Term::Tuple(elems) => elems
+            TermKind::Application(ref t1, ref t2) => {
+                Ok(T![app map(t1, cutoff, on_var)?, map(t2, cutoff, on_var)?; t.span])
+            }
+            TermKind::True | TermKind::False | TermKind::Zero | TermKind::Unit => Ok(t.clone()),
+            TermKind::Succ(ref t) => Ok(T![succ map(t, cutoff, on_var)?; t.span]),
+            TermKind::Pred(ref t) => Ok(T![pred map(t, cutoff, on_var)?; t.span]),
+            TermKind::IsZero(ref t) => Ok(T![iszero map(t, cutoff, on_var)?; t.span]),
+            TermKind::Ascription(ref t, _) => Ok(T![iszero map(t, cutoff, on_var)?; t.span]),
+            TermKind::Tuple(ref elems) => elems
                 .iter()
                 .map(|e| map(e, cutoff, on_var))
                 .collect::<Result<Vec<_>>>()
-                .map(|elems| Rc::new(Term::Tuple(elems))),
-            Term::Let(x, t1, t2) => {
-                Ok(T![let *x, map(t1, cutoff, on_var)?, map(t2, cutoff + 1, on_var)?])
+                .map(|elems| {
+                    Rc::new(Term {
+                        kind: TermKind::Tuple(elems),
+                        span: t.span,
+                    })
+                }),
+            TermKind::Let(x, ref t1, ref t2) => {
+                Ok(T![let x, map(t1, cutoff, on_var)?, map(t2, cutoff + 1, on_var)?; t.span])
             }
-            Term::If(cond, then, else_b) => Ok(T![if
+            TermKind::If(ref cond, ref then, ref else_b) => Ok(T![if
                                                map(cond, cutoff, on_var)?,
                                                map(then, cutoff, on_var)?,
-                                               map(else_b, cutoff, on_var)?,
-            ]),
-            Term::Projection(t, i) => Ok(T![proj map(t, cutoff, on_var)?, *i]),
+                                               map(else_b, cutoff, on_var)?;
+            t.span]),
+            TermKind::Projection(ref t, i) => Ok(T![proj map(t, cutoff, on_var)?, i; t.span]),
         }
     }
     map(t, cutoff, &on_var)
 }
 
 pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
-    match t.as_ref() {
-        Term::Variable(idx) => match env.get_name_from_db_index(*idx) {
+    match t.as_ref().kind {
+        TermKind::Variable(idx) => match env.get_name_from_db_index(idx) {
             Some(v) => Ok(v.to_string()),
-            None => Err(error!("Invalid de Bruijn index: {}", *idx)),
+            None => Err(error!("Invalid de Bruijn index: {}", idx; t.span)),
         },
-        Term::Abstraction(param, ty, body) => {
-            let (param, env) = new_name(*param, ty, &env);
+        TermKind::Abstraction(param, ref ty, ref body) => {
+            let (param, env) = new_name(param, ty, &env);
             Ok(format!("λ{}:{}.{}", param, ty, term_to_string(body, &env)?))
         }
-        Term::Application(t1, t2) => {
-            let t1_paren = matches!(**t1, Term::Abstraction(_, _, _));
-            let t2_paren = matches!(**t2, Term::Application(_, _));
+        TermKind::Application(ref t1, ref t2) => {
+            let t1_paren = matches!(t1.kind, TermKind::Abstraction(_, _, _));
+            let t2_paren = matches!(t2.kind, TermKind::Application(_, _));
             let (t2_lp, t2_rp) = if t2_paren { ("(", ")") } else { ("", "") };
             let (t1_lp, t1_rp) = if t1_paren { ("(", ")") } else { ("", "") };
             Ok(format!(
@@ -347,27 +380,27 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
                 t2_rp
             ))
         }
-        Term::Unit => Ok(String::from("unit")),
-        Term::True => Ok(String::from("true")),
-        Term::False => Ok(String::from("false")),
-        Term::Zero => Ok(String::from("0")),
-        Term::Pred(t) => Ok(format!("pred {}", term_to_string(t, &env)?)),
-        Term::Succ(t) => Ok(format!("succ {}", term_to_string(t, &env)?)),
-        Term::IsZero(t) => Ok(format!("iszero {}", term_to_string(t, &env)?)),
-        Term::Ascription(t, _) => term_to_string(t, &env),
-        Term::If(c, t, e) => Ok(format!(
+        TermKind::Unit => Ok(String::from("unit")),
+        TermKind::True => Ok(String::from("true")),
+        TermKind::False => Ok(String::from("false")),
+        TermKind::Zero => Ok(String::from("0")),
+        TermKind::Pred(ref t) => Ok(format!("pred {}", term_to_string(t, &env)?)),
+        TermKind::Succ(ref t) => Ok(format!("succ {}", term_to_string(t, &env)?)),
+        TermKind::IsZero(ref t) => Ok(format!("iszero {}", term_to_string(t, &env)?)),
+        TermKind::Ascription(ref t, _) => term_to_string(t, &env),
+        TermKind::If(ref c, ref t, ref e) => Ok(format!(
             "if {} then {} else {}",
             term_to_string(c, &env)?,
             term_to_string(t, &env)?,
             term_to_string(e, &env)?,
         )),
-        Term::Let(x, t1, t2) => Ok(format!(
+        TermKind::Let(x, ref t1, ref t2) => Ok(format!(
             "let {} = {} in {}",
             x,
             term_to_string(t1, &env)?,
             term_to_string(t2, &env)?,
         )),
-        Term::Tuple(elems) => Ok(format!(
+        TermKind::Tuple(ref elems) => Ok(format!(
             "{{{}}}",
             elems
                 .iter()
@@ -375,7 +408,7 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
                 .collect::<Result<Vec<_>>>()?
                 .join(", ")
         )),
-        Term::Projection(t, i) => Ok(format!("{}.{}", term_to_string(t, &env)?, i,)),
+        TermKind::Projection(ref t, i) => Ok(format!("{}.{}", term_to_string(t, &env)?, i,)),
     }
 }
 
@@ -391,62 +424,61 @@ fn new_name<'a>(s: impl Into<Symbol>, ty: &LTy, env: &'a Env) -> (Symbol, Env<'a
 
 #[macro_export]
 macro_rules! T {
-    (var $n:expr $(,)?) => {
-        Rc::new(Term::Variable($n))
+    (var $n:expr; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Variable($n), span: $span.into() })
     };
-    (var $name:expr $(,)?) => {
-        Rc::new(Term::Variable($name.into(), None.into()))
+    (abs $param:expr, $ty:expr, $body:expr; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Abstraction($param.into(), $ty.clone(), $body.clone()), span: $span.into() })
     };
-    (abs $param:expr, $ty:expr, $body:expr $(,)?) => {
-        Rc::new(Term::Abstraction($param.into(), $ty.clone(), $body.clone()))
+    (app $t1:expr, $t2:expr; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Application($t1.clone(), $t2.clone()), span: $span.into() })
     };
-    (app $t1:expr, $t2:expr $(,)?) => {
-        Rc::new(Term::Application($t1.clone(), $t2.clone()))
+    (asc $t:expr, $ty:expr; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Ascription($t.clone(), $ty.clone()), span: $span.into() })
     };
-    (asc $t:expr, $ty:expr $(,)?) => {
-        Rc::new(Term::Ascription($t.clone(), $ty.clone()))
+    (true; $span:expr) => {
+        Rc::new(Term { kind: TermKind::True, span: $span.into() })
     };
-    (true $(,)?) => {
-        Rc::new(Term::True)
+    (false; $span:expr) => {
+        Rc::new(Term { kind: TermKind::False, span: $span.into() })
     };
-    (false $(,)?) => {
-        Rc::new(Term::False)
+    (if $cond:expr, $then:expr, $else:expr; $span:expr) => {
+        Rc::new(Term { kind: TermKind::If($cond.clone(), $then.clone(), $else.clone()), span: $span.into() })
     };
-    (if $cond:expr, $then:expr, $else:expr $(,)?) => {
-        Rc::new(Term::If($cond.clone(), $then.clone(), $else.clone()))
+    (0; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Zero, span: $span.into() })
     };
-    (0) => {
-        Rc::new(Term::Zero)
+    (succ $t:expr; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Succ($t.clone()), span: $span.into() })
     };
-    (succ $t:expr) => {
-        Rc::new(Term::Succ($t.clone()))
+    (pred $t:expr; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Pred($t.clone()), span: $span.into() })
     };
-    (pred $t:expr) => {
-        Rc::new(Term::Pred($t.clone()))
+    (iszero $t:expr; $span:expr) => {
+        Rc::new(Term { kind: TermKind::IsZero($t.clone()), span: $span.into() })
     };
-    (iszero $t:expr) => {
-        Rc::new(Term::IsZero($t.clone()))
+    (unit; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Unit, span: $span.into() })
     };
-    (unit) => {
-        Rc::new(Term::Unit)
+    (let $var:expr, $expr:expr, $body:expr; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Let($var.into(), $expr.clone(), $body.clone()), span: $span.into() })
     };
-    (let $var:expr, $expr:expr, $body:expr) => {
-        Rc::new(Term::Let($var.into(), $expr.clone(), $body.clone()))
+    (tuple $($term:expr),*; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Tuple(vec![$($term.clone()),*]), span: $span.into() })
     };
-    (tuple $($term:expr),*) => {
-        Rc::new(Term::Tuple(vec![$($term.clone()),*]))
-    };
-    (proj $term:expr, $elem:expr) => {
-        Rc::new(Term::Projection($term.clone(), $elem))
+    (proj $term:expr, $elem:expr; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Projection($term.clone(), $elem), span: $span.into() })
     };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Ty;
     use crate::{parser::parse, types::type_of, TY};
+    use crate::{types::Ty, types::TyKind, S};
     use std::rc::Rc;
+
+    const SPAN: Span = Span::new(0, 1);
 
     fn check_parse(input: &str, expected: LTerm) {
         let env = Env::new();
@@ -514,49 +546,49 @@ mod tests {
         env.insert_variable("and", and.clone(), type_of(&and, &env)?);
 
         // and true true → true
-        check_env(parse("and true true", &env)?, T![true], &env);
+        check_env(parse("and true true", &env)?, T![true; SPAN], &env);
         // and true false → false
-        check_env(parse("and true false", &env)?, T![false], &env);
+        check_env(parse("and true false", &env)?, T![false; SPAN], &env);
         // and false true → false
-        check_env(parse("and false true", &env)?, T![false], &env);
+        check_env(parse("and false true", &env)?, T![false; SPAN], &env);
         // and false false → false
-        check_env(parse("and false false", &env)?, T![false], &env);
+        check_env(parse("and false false", &env)?, T![false; SPAN], &env);
 
         // λb. b false true
         let not = parse("λb:Bool. if b then false else true", &env)?;
         env.insert_variable("not", not.clone(), type_of(&not, &env)?);
 
         // not true → false
-        check_env(parse("not true", &env)?, T![false], &env);
+        check_env(parse("not true", &env)?, T![false; SPAN], &env);
         // not false → true
-        check_env(parse("not false", &env)?, T![true], &env);
+        check_env(parse("not false", &env)?, T![true; SPAN], &env);
 
         // λb.λc. b true c
         let or = parse("λb:Bool.λc:Bool.if b then true else c", &env)?;
         env.insert_variable("or", or.clone(), type_of(&or, &env)?);
 
         // or true true → true
-        check_env(parse("or true true", &env)?, T![true], &env);
+        check_env(parse("or true true", &env)?, T![true; SPAN], &env);
         // or true false → true
-        check_env(parse("or true false", &env)?, T![true], &env);
+        check_env(parse("or true false", &env)?, T![true; SPAN], &env);
         // or false true → true
-        check_env(parse("or false true", &env)?, T![true], &env);
+        check_env(parse("or false true", &env)?, T![true; SPAN], &env);
         // or false false → false
-        check_env(parse("or false false", &env)?, T![false], &env);
+        check_env(parse("or false false", &env)?, T![false; SPAN], &env);
 
         let eq = parse("λb1:Bool.λb2:Bool.if b1 then b2 else not b2", &env)?;
         env.insert_variable("eq", eq.clone(), type_of(&eq, &env)?);
-        check_env(parse("eq true true", &env)?, T![true], &env);
-        check_env(parse("eq false true", &env)?, T![false], &env);
-        check_env(parse("eq true false", &env)?, T![false], &env);
-        check_env(parse("eq false false", &env)?, T![true], &env);
+        check_env(parse("eq true true", &env)?, T![true; SPAN], &env);
+        check_env(parse("eq false true", &env)?, T![false; SPAN], &env);
+        check_env(parse("eq true false", &env)?, T![false; SPAN], &env);
+        check_env(parse("eq false false", &env)?, T![true; SPAN], &env);
 
         let eq = parse("λb1:Bool.λb2:Bool.not (eq b1 b2)", &env)?;
         env.insert_variable("neq", eq.clone(), type_of(&eq, &env)?);
-        check_env(parse("neq true true", &env)?, T![false], &env);
-        check_env(parse("neq false true", &env)?, T![true], &env);
-        check_env(parse("neq true false", &env)?, T![true], &env);
-        check_env(parse("neq false false", &env)?, T![false], &env);
+        check_env(parse("neq true true", &env)?, T![false; SPAN], &env);
+        check_env(parse("neq false true", &env)?, T![true; SPAN], &env);
+        check_env(parse("neq true false", &env)?, T![true; SPAN], &env);
+        check_env(parse("neq false false", &env)?, T![false; SPAN], &env);
 
         Ok(())
     }
@@ -577,12 +609,15 @@ mod tests {
         let r#const = parse("λx:Bool.tru", &env)?;
         let const_shifted = shift(&r#const, 1)?;
         // Should shift true from 1 → 2
-        assert_eq!(const_shifted, T![abs "x", TY![bool], T![var 2]]);
+        assert_eq!(
+            const_shifted,
+            T![abs "x", TY![bool; SPAN], T![var 2; SPAN]; SPAN]
+        );
 
         let test = parse("tru id", &env)?;
         let test_shifted = shift_above(&test, 3, 1)?;
-        assert_eq!(test_shifted, T![app T![var 0], T![var 4]]);
-        assert_eq!(test, T![app T![var 0], T![var 1]]);
+        assert_eq!(test_shifted, T![app T![var 0; SPAN], T![var 4; SPAN]; SPAN]);
+        assert_eq!(test, T![app T![var 0; SPAN], T![var 1; SPAN]; SPAN]);
 
         // ↑²(λ.λ.1 (0 2))
         let book_example_1 = parse("λx:Bool.λy:Bool.x (y tru)", &env)?;
@@ -590,7 +625,7 @@ mod tests {
         // Expected λ.λ.1 (0 4)
         assert_eq!(
             b_ex_1_shifted,
-            T![abs "x", TY![bool], T![abs "y", TY![bool], T![app T![var 1], T![app T![var 0], T![var 4]]]]]
+            T![abs "x", TY![bool; SPAN], T![abs "y", TY![bool; SPAN], T![app T![var 1; SPAN], T![app T![var 0; SPAN], T![var 4; SPAN]; SPAN]; SPAN]; SPAN]; SPAN]
         );
 
         // ↑²(λ.0 1 (λ. 0 1 2))
@@ -599,7 +634,7 @@ mod tests {
         // Expected λ.0 3 (λ. 0 1 4)
         assert_eq!(
             b_ex_2_shifted,
-            T![abs "x", TY![bool], T![app T![app T![var 0], T![var 3]], T![abs "y", TY![bool], T![app T![app T![var 0], T![var 1]], T![var 4]]]]]
+            T![abs "x", TY![bool; SPAN], T![app T![app T![var 0; SPAN], T![var 3; SPAN]; SPAN], T![abs "y", TY![bool; SPAN], T![app T![app T![var 0; SPAN], T![var 1; SPAN]; SPAN], T![var 4; SPAN]; SPAN]; SPAN]; SPAN]; SPAN]
         );
         Ok(())
     }
@@ -637,69 +672,75 @@ mod tests {
 
     #[test]
     fn test_eval_nat() {
-        check_parse("0", T![0]);
-        check_parse("1", T![succ T![0]]);
-        check_parse("iszero 0", T![true]);
-        check_parse("iszero succ 0", T![false]);
-        check_parse("iszero pred succ 0", T![true]);
-        check_parse("pred 0", T![0]);
-        check_parse("pred succ 0", T![0]);
-        check_parse("pred pred pred pred 0", T![0]);
-        check_parse("succ succ pred 0", T![succ T![succ T![0]]]);
+        check_parse("0", T![0; SPAN]);
+        check_parse("1", T![succ T![0; SPAN]; SPAN]);
+        check_parse("iszero 0", T![true; SPAN]);
+        check_parse("iszero succ 0", T![false; SPAN]);
+        check_parse("iszero pred succ 0", T![true; SPAN]);
+        check_parse("pred 0", T![0; SPAN]);
+        check_parse("pred succ 0", T![0; SPAN]);
+        check_parse("pred pred pred pred 0", T![0; SPAN]);
+        check_parse(
+            "succ succ pred 0",
+            T![succ T![succ T![0; SPAN]; SPAN]; SPAN],
+        );
 
-        check_parse("pred 3", T![succ T![succ T![0]]]);
-        check_parse("(λx:Nat.iszero pred x) 0", T![true]);
-        check_parse("(λx:Nat.iszero pred x) 1", T![true]);
-        check_parse("(λx:Nat.iszero pred x) 2", T![false]);
+        check_parse("pred 3", T![succ T![succ T![0; SPAN]; SPAN]; SPAN]);
+        check_parse("(λx:Nat.iszero pred x) 0", T![true; SPAN]);
+        check_parse("(λx:Nat.iszero pred x) 1", T![true; SPAN]);
+        check_parse("(λx:Nat.iszero pred x) 2", T![false; SPAN]);
     }
 
     #[test]
     fn test_eval_unit() {
-        check_parse("unit", T![unit]);
-        check_parse("(λx:Nat.unit)3", T![unit]);
-        check_parse("(λx:Unit.true)unit", T![true]);
+        check_parse("unit", T![unit; SPAN]);
+        check_parse("(λx:Nat.unit)3", T![unit; SPAN]);
+        check_parse("(λx:Unit.true)unit", T![true; SPAN]);
     }
 
     #[test]
     fn test_eval_ascription() {
-        check_parse("true as Bool", T![true]);
-        check_parse("0 as Nat", T![0]);
+        check_parse("true as Bool", T![true; SPAN]);
+        check_parse("0 as Nat", T![0; SPAN]);
         check_parse(
             "(λx:Bool.x) as Bool → Bool",
-            T![abs "x", TY![bool], T![var 0]],
+            T![abs "x", TY![bool; SPAN], T![var 0; SPAN]; SPAN],
         );
     }
 
     #[test]
     fn test_eval_let_binding() {
-        check_parse("let x = true in true", T![true]);
+        check_parse("let x = true in true", T![true; S![16, 20]]);
         check_parse(
             "(let not = λb:Bool.if b then false else true in not) true",
-            T![false],
+            T![false; S![30, 35]],
         );
         check_parse(
             r#"let not = λb:Bool.if b then false else true
                    in let and = λb1:Bool.λb2:Bool.if b1 then b2 else false
                       in and (not false) (not false)"#,
-            T![true],
+            T![true; SPAN],
         );
         check_parse(
             r#"let not = λb:Bool.if b then false else true
                    in let and = λb1:Bool.λb2:Bool.if b1 then b2 else false
                       in let nand = λb1:Bool.λb2:Bool.not (and b1 b2)
                          in nand false false"#,
-            T![true],
+            T![true; SPAN],
         );
     }
 
     #[test]
     fn test_eval_tuple() {
-        check_parse("{true, true}", T![tuple T![true], T![true]]);
+        check_parse(
+            "{true, true}",
+            T![tuple T![true; S![1, 5]], T![true; S![7, 11]]; S![0, 12]],
+        );
         check_parse(
             "{(λb:Bool.b) true, (λb:Bool.b) true}",
-            T![tuple T![true], T![true]],
+            T![tuple T![true; SPAN], T![true; SPAN]; SPAN],
         );
-        check_parse("{true}.1", T![true]);
-        check_parse("(λt:{Bool,Bool}.t.1) {false, true}", T![false]);
+        check_parse("{true}.1", T![true; SPAN]);
+        check_parse("(λt:{Bool,Bool}.t.1) {false, true}", T![false; SPAN]);
     }
 }

@@ -173,14 +173,18 @@ mod tests {
     use super::*;
     use crate::{
         parser::parse,
-        types::{type_of, Ty},
+        types::{type_of, Ty, TyKind},
+        Span,
     };
     use std::rc::Rc;
 
     #[test]
     fn test_env() -> Result<()> {
         let mut env = Env::new();
-        let bool_ty = Rc::new(Ty::Bool);
+        let bool_ty = Rc::new(Ty {
+            kind: TyKind::Bool,
+            span: Span::new(0, 1),
+        });
         assert_eq!(env.get("id"), None);
 
         let id = parse("λx:Bool.x", &env)?;
