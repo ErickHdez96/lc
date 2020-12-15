@@ -120,7 +120,7 @@ false : Bool
 
 * Allow user defined variables.
 * Add better error messages
-* Records
+* Pattern matching over records
 * Sums
 * Variants
 * General Recursion
