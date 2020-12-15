@@ -70,8 +70,8 @@ use crate::T;
 ///
 /// Here call by value is used.
 use crate::{env::Env, types::type_of};
-use std::convert::TryFrom;
 use std::rc::Rc;
+use std::{collections::HashMap, convert::TryFrom};
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -130,8 +130,8 @@ pub enum TermKind {
     Unit,
     Ascription(LTerm, LTy),
     Let(Symbol, LTerm, LTerm),
-    Tuple(Vec<LTerm>),
-    Projection(LTerm, usize),
+    Record(HashMap<Symbol, LTerm>),
+    Projection(LTerm, Symbol),
 }
 
 pub type LTerm = Rc<Term>;
@@ -227,29 +227,29 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
             env.insert_let_term(x, t1.clone());
             eval_(&term_subst_top(&t1, &t2)?, &env)
         }
-        TermKind::Tuple(ref elems) => elems
+        TermKind::Record(ref elems) => elems
             .iter()
-            .map(|e| eval_(e, &env))
-            .collect::<Result<Vec<_>>>()
+            .map(|(k, e)| eval_(e, &env).map(|e| (*k, e)))
+            .collect::<Result<HashMap<_, _>>>()
             .map(|elems| {
                 Rc::new(Term {
-                    kind: TermKind::Tuple(elems),
+                    kind: TermKind::Record(elems),
                     span: eval_t.span,
                 })
             }),
         TermKind::Projection(ref t, i) => {
             let t = eval_(t, &env)?;
-            if i == 0 {
+            if i.as_str() == "0" {
                 return Err(error!(
-                    "Cannot access a tuple with `0`, projections start from `1`"; eval_t.span
+                    "Cannot access a record with `0`, projections start from `1`"; eval_t.span
                 ));
             }
             match t.as_ref().kind {
-                TermKind::Tuple(ref elems) => match elems.get(i - 1) {
+                TermKind::Record(ref elems) => match elems.get(&i) {
                     Some(e) => Ok(e.clone()),
-                    None => Err(error!("Couldn't get element `{}` from tuple", i; eval_t.span)),
+                    None => Err(error!("Couldn't get element `{}` from record", i; eval_t.span)),
                 },
-                _ => Err(error!("Projections can only be done over tuples"; eval_t.span)),
+                _ => Err(error!("Projections can only be done over records"; eval_t.span)),
             }
         }
     }
@@ -331,13 +331,13 @@ where
             TermKind::Pred(ref t) => Ok(T![pred map(t, cutoff, on_var)?; t.span]),
             TermKind::IsZero(ref t) => Ok(T![iszero map(t, cutoff, on_var)?; t.span]),
             TermKind::Ascription(ref t, _) => Ok(T![iszero map(t, cutoff, on_var)?; t.span]),
-            TermKind::Tuple(ref elems) => elems
+            TermKind::Record(ref elems) => elems
                 .iter()
-                .map(|e| map(e, cutoff, on_var))
-                .collect::<Result<Vec<_>>>()
+                .map(|(k, e)| map(e, cutoff, on_var).map(|e| (*k, e)))
+                .collect::<Result<HashMap<_, _>>>()
                 .map(|elems| {
                     Rc::new(Term {
-                        kind: TermKind::Tuple(elems),
+                        kind: TermKind::Record(elems),
                         span: t.span,
                     })
                 }),
@@ -356,6 +356,14 @@ where
 }
 
 pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
+    fn symbol_to_record_key(s: Symbol) -> String {
+        if s.as_str().parse::<u64>().is_ok() {
+            String::new()
+        } else {
+            format!("{}=", s)
+        }
+    }
+
     match t.as_ref().kind {
         TermKind::Variable(idx) => match env.get_name_from_db_index(idx) {
             Some(v) => Ok(v.to_string()),
@@ -400,14 +408,23 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
             term_to_string(t1, &env)?,
             term_to_string(t2, &env)?,
         )),
-        TermKind::Tuple(ref elems) => Ok(format!(
-            "{{{}}}",
-            elems
-                .iter()
-                .map(|e| term_to_string(e, &env))
-                .collect::<Result<Vec<_>>>()?
-                .join(", ")
-        )),
+        TermKind::Record(ref elems) => {
+            let mut keys = elems.keys().cloned().collect::<Vec<_>>();
+            keys.sort();
+            Ok(format!(
+                "{{{}}}",
+                keys.into_iter()
+                    .map(
+                        |k| term_to_string(elems.get(&k).unwrap(), &env).map(|e| format!(
+                            "{}{}",
+                            symbol_to_record_key(k),
+                            e
+                        ))
+                    )
+                    .collect::<Result<Vec<_>>>()?
+                    .join(", ")
+            ))
+        }
         TermKind::Projection(ref t, i) => Ok(format!("{}.{}", term_to_string(t, &env)?, i,)),
     }
 }
@@ -463,8 +480,8 @@ macro_rules! T {
     (let $var:expr, $expr:expr, $body:expr; $span:expr) => {
         Rc::new(Term { kind: TermKind::Let($var.into(), $expr.clone(), $body.clone()), span: $span.into() })
     };
-    (tuple $($term:expr),*; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Tuple(vec![$($term.clone()),*]), span: $span.into() })
+    (record $($term:expr),*; $span:expr) => {
+        Rc::new(Term { kind: TermKind::Record(vec![$($term.clone()),*]), span: $span.into() })
     };
     (proj $term:expr, $elem:expr; $span:expr) => {
         Rc::new(Term { kind: TermKind::Projection($term.clone(), $elem), span: $span.into() })
@@ -473,20 +490,36 @@ macro_rules! T {
 
 #[cfg(test)]
 mod tests {
+    use expect_test::expect;
+
     use super::*;
     use crate::{parser::parse, types::type_of, TY};
-    use crate::{types::Ty, types::TyKind, S};
+    use crate::{types::Ty, types::TyKind};
     use std::rc::Rc;
 
     const SPAN: Span = Span::new(0, 1);
 
-    fn check_parse(input: &str, expected: LTerm) {
+    fn check(input: &str, expected: expect_test::Expect) {
         let env = Env::new();
-        actual_check(parse(input, &env).expect("Couldn't parse"), expected, &env);
+        expected.assert_eq(
+            &term_to_string(
+                &eval(&parse(input, &env).expect("Couldn't parse"), &env)
+                    .expect("Couldn't evaluate"),
+                &Env::new(),
+            )
+            .expect("Couldn't stringify"),
+        );
     }
 
-    fn check(lt: LTerm, expected: LTerm) {
-        actual_check(lt, expected, &Env::new());
+    fn new_check_env(input: &str, expected: expect_test::Expect, env: &Env) {
+        expected.assert_eq(
+            &term_to_string(
+                &eval(&parse(input, &env).expect("Couldn't parse"), &env)
+                    .expect("Couldn't evaluate"),
+                &env,
+            )
+            .expect("Couldn't stringify"),
+        );
     }
 
     fn check_env(lt: LTerm, expected: LTerm, env: &Env) {
@@ -511,10 +544,8 @@ mod tests {
 
     /// Evaluating an abstraction, returns the abstraction
     #[test]
-    fn test_eval_abstraction() -> Result<()> {
-        let id = parse("λx:Bool.x", &Env::new())?;
-        check(id.clone(), id);
-        Ok(())
+    fn test_eval_abstraction() {
+        check("λx:Bool.x", expect![["λx:Bool.x"]]);
     }
 
     #[test]
@@ -524,12 +555,8 @@ mod tests {
         let apply_fn = parse("λf:Bool → Bool.λb:Bool.f b", &env)?;
         env.insert_variable("id", id.clone(), type_of(&id, &env)?);
         env.insert_variable("applyfn", apply_fn.clone(), type_of(&apply_fn, &env)?);
+        new_check_env("applyfn id", expect![["λb:Bool.(λx:Bool.x) b"]], &env);
 
-        check_env(
-            parse("applyfn id", &env)?,
-            parse("λb:Bool.(λx:Bool.x) b", &env)?,
-            &env,
-        );
         Ok(())
     }
 
@@ -545,50 +572,40 @@ mod tests {
         let and = parse("λb:Bool.λc:Bool.if b then c else false", &env)?;
         env.insert_variable("and", and.clone(), type_of(&and, &env)?);
 
-        // and true true → true
-        check_env(parse("and true true", &env)?, T![true; SPAN], &env);
-        // and true false → false
-        check_env(parse("and true false", &env)?, T![false; SPAN], &env);
-        // and false true → false
-        check_env(parse("and false true", &env)?, T![false; SPAN], &env);
-        // and false false → false
-        check_env(parse("and false false", &env)?, T![false; SPAN], &env);
+        new_check_env("and true true", expect![["true"]], &env);
+        new_check_env("and true false", expect![["false"]], &env);
+        new_check_env("and false true", expect![["false"]], &env);
+        new_check_env("and false false", expect![["false"]], &env);
 
         // λb. b false true
         let not = parse("λb:Bool. if b then false else true", &env)?;
         env.insert_variable("not", not.clone(), type_of(&not, &env)?);
 
-        // not true → false
-        check_env(parse("not true", &env)?, T![false; SPAN], &env);
-        // not false → true
-        check_env(parse("not false", &env)?, T![true; SPAN], &env);
+        new_check_env("not true", expect![["false"]], &env);
+        new_check_env("not false", expect![["true"]], &env);
 
         // λb.λc. b true c
         let or = parse("λb:Bool.λc:Bool.if b then true else c", &env)?;
         env.insert_variable("or", or.clone(), type_of(&or, &env)?);
 
-        // or true true → true
-        check_env(parse("or true true", &env)?, T![true; SPAN], &env);
-        // or true false → true
-        check_env(parse("or true false", &env)?, T![true; SPAN], &env);
-        // or false true → true
-        check_env(parse("or false true", &env)?, T![true; SPAN], &env);
-        // or false false → false
-        check_env(parse("or false false", &env)?, T![false; SPAN], &env);
+        new_check_env("or true true", expect![["true"]], &env);
+        new_check_env("or true false", expect![["true"]], &env);
+        new_check_env("or false true", expect![["true"]], &env);
+        new_check_env("or false false", expect![["false"]], &env);
 
         let eq = parse("λb1:Bool.λb2:Bool.if b1 then b2 else not b2", &env)?;
         env.insert_variable("eq", eq.clone(), type_of(&eq, &env)?);
-        check_env(parse("eq true true", &env)?, T![true; SPAN], &env);
-        check_env(parse("eq false true", &env)?, T![false; SPAN], &env);
-        check_env(parse("eq true false", &env)?, T![false; SPAN], &env);
-        check_env(parse("eq false false", &env)?, T![true; SPAN], &env);
+        new_check_env("eq true true", expect![["true"]], &env);
+        new_check_env("eq false true", expect![["false"]], &env);
+        new_check_env("eq true false", expect![["false"]], &env);
+        new_check_env("eq false false", expect![["true"]], &env);
 
         let eq = parse("λb1:Bool.λb2:Bool.not (eq b1 b2)", &env)?;
         env.insert_variable("neq", eq.clone(), type_of(&eq, &env)?);
-        check_env(parse("neq true true", &env)?, T![false; SPAN], &env);
-        check_env(parse("neq false true", &env)?, T![true; SPAN], &env);
-        check_env(parse("neq true false", &env)?, T![true; SPAN], &env);
-        check_env(parse("neq false false", &env)?, T![false; SPAN], &env);
+        new_check_env("neq true true", expect![["false"]], &env);
+        new_check_env("neq false true", expect![["true"]], &env);
+        new_check_env("neq true false", expect![["true"]], &env);
+        new_check_env("neq false false", expect![["false"]], &env);
 
         Ok(())
     }
@@ -672,75 +689,72 @@ mod tests {
 
     #[test]
     fn test_eval_nat() {
-        check_parse("0", T![0; SPAN]);
-        check_parse("1", T![succ T![0; SPAN]; SPAN]);
-        check_parse("iszero 0", T![true; SPAN]);
-        check_parse("iszero succ 0", T![false; SPAN]);
-        check_parse("iszero pred succ 0", T![true; SPAN]);
-        check_parse("pred 0", T![0; SPAN]);
-        check_parse("pred succ 0", T![0; SPAN]);
-        check_parse("pred pred pred pred 0", T![0; SPAN]);
-        check_parse(
-            "succ succ pred 0",
-            T![succ T![succ T![0; SPAN]; SPAN]; SPAN],
-        );
-
-        check_parse("pred 3", T![succ T![succ T![0; SPAN]; SPAN]; SPAN]);
-        check_parse("(λx:Nat.iszero pred x) 0", T![true; SPAN]);
-        check_parse("(λx:Nat.iszero pred x) 1", T![true; SPAN]);
-        check_parse("(λx:Nat.iszero pred x) 2", T![false; SPAN]);
+        check("0", expect![["0"]]);
+        check("1", expect![["succ 0"]]);
+        check("iszero 0", expect![[r#"true"#]]);
+        check("iszero succ 0", expect![[r#"false"#]]);
+        check("iszero pred succ 0", expect![[r#"true"#]]);
+        check("pred 0", expect![[r#"0"#]]);
+        check("pred succ 0", expect![[r#"0"#]]);
+        check("pred pred pred pred 0", expect![[r#"0"#]]);
+        check("succ succ pred 0", expect![[r#"succ succ 0"#]]);
+        check("pred 3", expect![[r#"succ succ 0"#]]);
+        check("(λx:Nat.iszero pred x) 0", expect![[r#"true"#]]);
+        check("(λx:Nat.iszero pred x) 1", expect![[r#"true"#]]);
+        check("(λx:Nat.iszero pred x) 2", expect![[r#"false"#]]);
     }
 
     #[test]
     fn test_eval_unit() {
-        check_parse("unit", T![unit; SPAN]);
-        check_parse("(λx:Nat.unit)3", T![unit; SPAN]);
-        check_parse("(λx:Unit.true)unit", T![true; SPAN]);
+        check("unit", expect![[r#"unit"#]]);
+        check("(λx:Nat.unit)3", expect![[r#"unit"#]]);
+        check("(λx:Unit.true)unit", expect![[r#"true"#]]);
     }
 
     #[test]
     fn test_eval_ascription() {
-        check_parse("true as Bool", T![true; SPAN]);
-        check_parse("0 as Nat", T![0; SPAN]);
-        check_parse(
-            "(λx:Bool.x) as Bool → Bool",
-            T![abs "x", TY![bool; SPAN], T![var 0; SPAN]; SPAN],
-        );
+        check("true as Bool", expect![[r#"true"#]]);
+        check("0 as Nat", expect![[r#"0"#]]);
+        check("(λx:Bool.x) as Bool → Bool", expect![[r#"λx:Bool.x"#]]);
     }
 
     #[test]
     fn test_eval_let_binding() {
-        check_parse("let x = true in true", T![true; S![16, 20]]);
-        check_parse(
+        check("let x = true in true", expect![[r#"true"#]]);
+        check(
             "(let not = λb:Bool.if b then false else true in not) true",
-            T![false; S![30, 35]],
+            expect![[r#"false"#]],
         );
-        check_parse(
+        check(
             r#"let not = λb:Bool.if b then false else true
                    in let and = λb1:Bool.λb2:Bool.if b1 then b2 else false
                       in and (not false) (not false)"#,
-            T![true; SPAN],
+            expect![[r#"true"#]],
         );
-        check_parse(
+        check(
             r#"let not = λb:Bool.if b then false else true
                    in let and = λb1:Bool.λb2:Bool.if b1 then b2 else false
                       in let nand = λb1:Bool.λb2:Bool.not (and b1 b2)
                          in nand false false"#,
-            T![true; SPAN],
+            expect![[r#"true"#]],
         );
     }
 
     #[test]
-    fn test_eval_tuple() {
-        check_parse(
-            "{true, true}",
-            T![tuple T![true; S![1, 5]], T![true; S![7, 11]]; S![0, 12]],
+    fn test_eval_record() {
+        check("{true, true}", expect![[r#"{true, true}"#]]);
+        check(
+            "{first=true, last=true}",
+            expect![[r#"{first=true, last=true}"#]],
         );
-        check_parse(
+        check("{first=true, last=false}.first", expect![[r#"true"#]]);
+        check("{first=true, last=false}.last", expect![[r#"false"#]]);
+        check("{first=true, 0, last=false}.2", expect![[r#"0"#]]);
+        check(
             "{(λb:Bool.b) true, (λb:Bool.b) true}",
-            T![tuple T![true; SPAN], T![true; SPAN]; SPAN],
+            expect![[r#"{true, true}"#]],
         );
-        check_parse("{true}.1", T![true; SPAN]);
-        check_parse("(λt:{Bool,Bool}.t.1) {false, true}", T![false; SPAN]);
+        check("{true}.1", expect![[r#"true"#]]);
+        check("(λt:{Bool,Bool}.t.1) {false, true}", expect![[r#"false"#]]);
     }
 }

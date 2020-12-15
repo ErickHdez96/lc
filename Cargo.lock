@@ -103,6 +103,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "difference"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "524cbf6897b527295dff137cec09ecf3a05f4fddffd7dfcd1585403449e74198"
+
+[[package]]
 name = "dirs"
 version = "3.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -133,6 +139,16 @@ dependencies = [
  "log",
  "regex",
  "termcolor",
+]
+
+[[package]]
+name = "expect-test"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eab78d4c727fa879de40951ffc01ed781a231b28786b19d6bfbdc0d1ec92eb3e"
+dependencies = [
+ "difference",
+ "once_cell",
 ]
 
 [[package]]
@@ -189,6 +205,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "env_logger",
+ "expect-test",
  "log",
  "logos",
  "rustyline",
@@ -251,6 +268,12 @@ dependencies = [
  "cfg-if 1.0.0",
  "libc",
 ]
+
+[[package]]
+name = "once_cell"
+version = "1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13bd41f508810a131401606d54ac32a467c97172d74ba7662562ebba5ad07fa0"
 
 [[package]]
 name = "proc-macro2"
@@ -347,7 +370,7 @@ checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
 [[package]]
 name = "string-interner"
 version = "0.1.0"
-source = "git+https://github.com/ErickHdez96/string-interner.git#34a19e4f61a746bf3223648e565bad945cb66272"
+source = "git+https://github.com/ErickHdez96/string-interner.git#34647eb27fd17ded1ea4d526aa70c769064c58fa"
 
 [[package]]
 name = "syn"

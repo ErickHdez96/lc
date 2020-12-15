@@ -11,7 +11,7 @@ use crate::{
     types::{LTy, TyKind},
     Span,
 };
-use std::rc::Rc;
+use std::{collections::HashMap, rc::Rc};
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -24,7 +24,7 @@ macro_rules! error {
     };
 }
 
-pub fn parse(input: &str, env: &Env<'static>) -> Result<LTerm> {
+pub fn parse(input: &str, env: &Env) -> Result<LTerm> {
     let tokens = tokenize(input);
     let parser = Parser::new(&tokens);
     parser.parse(env)
@@ -178,11 +178,19 @@ impl<'a> Parser<'a> {
             TokenKind::LBrace => {
                 let span = self.current_span();
                 self.bump();
-                let mut terms = Vec::new();
+                let mut terms = HashMap::new();
                 let mut comma_consumed = true;
 
                 while self.current().can_start_term() {
-                    terms.push(self.parse_application_or_var(&env)?);
+                    let key = if self.nth(1) == TokenKind::Assign {
+                        let (key, _) = self.eat_ident(false)?;
+                        self.eat(TokenKind::Assign)?;
+                        key
+                    } else {
+                        Symbol::from((terms.len() + 1).to_string())
+                    };
+                    let term = self.parse_application_or_var(&env)?;
+                    terms.insert(key, term);
                     if self.current() != TokenKind::Comma {
                         comma_consumed = false;
                         break;
@@ -202,7 +210,7 @@ impl<'a> Parser<'a> {
 
                 let span = span.with_hi(brace_span.hi);
                 Ok(Rc::new(Term {
-                    kind: TermKind::Tuple(terms),
+                    kind: TermKind::Record(terms),
                     span,
                 }))
             }
@@ -245,7 +253,17 @@ impl<'a> Parser<'a> {
             match self.current() {
                 TokenKind::Period => {
                     self.bump();
-                    let (elem, end) = self.eat_number()?;
+                    let (elem, end) = if self.current() == TokenKind::Number {
+                        let (n, end) = self.eat_number()?;
+                        (Symbol::from(n.to_string()), end)
+                    } else if self.current() == TokenKind::Ident {
+                        self.eat_ident(false)?
+                    } else {
+                        let t = self.next();
+                        return Err(
+                            error!("Expected an identifier or number, got `{}`", t; t.span),
+                        );
+                    };
                     let span = t.span.with_hi(end.hi);
                     t = T![proj t, elem; span];
                 }
@@ -359,11 +377,19 @@ impl<'a> Parser<'a> {
             TokenKind::LBrace => {
                 let span = self.current_span();
                 self.bump();
-                let mut types = Vec::new();
+                let mut types = HashMap::new();
                 let mut comma_consumed = true;
 
-                while self.current().can_start_term() {
-                    types.push(self.parse_type(&env)?);
+                while self.current().can_start_type() {
+                    let key = if self.nth(1) == TokenKind::Colon {
+                        let (key, _) = self.eat_ident(false)?;
+                        self.eat(TokenKind::Colon)?;
+                        key
+                    } else {
+                        Symbol::from((types.len() + 1).to_string())
+                    };
+                    let ty = self.parse_type(&env)?;
+                    types.insert(key, ty);
                     if self.current() != TokenKind::Comma {
                         comma_consumed = false;
                         break;
@@ -383,7 +409,7 @@ impl<'a> Parser<'a> {
 
                 let span = span.with_hi(brace_span.hi);
                 Rc::new(Ty {
-                    kind: TyKind::Tuple(types),
+                    kind: TyKind::Record(types),
                     span,
                 })
             }
@@ -403,18 +429,33 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Regression tests
+/// Run them normally with `cargo test`
+///
+/// When adding a new test, start with `check("input", expect![[]])`.
+/// Run `cargo test`.
+/// Make sure the result is the desired one.
+/// Then fix the test with `UPDATE_EXPECT=1 cargo test`.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{env::base_env, S, T, TY};
+    use crate::{term::term_to_string, S, T, TY};
+    use expect_test::expect;
     use std::rc::Rc;
 
     const SPAN: Span = Span::new(0, 0);
 
-    fn check(input: &str, expected: LTerm) {
-        assert_eq!(
-            parse(input, &Env::new()).expect("Could not parse").kind,
-            expected.kind,
+    fn check(input: &str, expected: expect_test::Expect) {
+        expected.assert_eq(&format!("{:?}", parse(input, &Env::new())));
+    }
+
+    fn check_stringify(input: &str, expected: expect_test::Expect) {
+        expected.assert_eq(
+            &term_to_string(
+                &parse(dbg!(input), &Env::new()).expect("Couldn't parse"),
+                &Env::new(),
+            )
+            .expect("Couldn't stringify"),
         );
     }
 
@@ -440,15 +481,21 @@ mod tests {
     fn test_parse_abstraction() {
         check(
             "λx:Bool.x",
-            T![abs "x", TY![bool; SPAN], T![var 0; S![9, 10]]; S![0, 10]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 10 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) }) })"#
+            ]],
         );
         check(
             r"\x:Bool.x",
-            T![abs "x", TY![bool; SPAN], T![var 0; S![8, 9]]; S![0, 9]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 9 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 3, hi: 7 }, kind: Bool }, Term { span: Span { lo: 8, hi: 9 }, kind: Variable(0) }) })"#
+            ]],
         );
         check(
             r"λx:Bool.λ_:Bool.x",
-            T![abs "x", TY![bool; SPAN], T![abs "_", TY![bool; SPAN], T![var 1; S![18, 19]]; S![9, 19]]; S![0, 19]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 19 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 19 }, kind: Abstraction(Symbol("_"), Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }, Term { span: Span { lo: 18, hi: 19 }, kind: Variable(1) }) }) })"#
+            ]],
         );
     }
 
@@ -456,17 +503,19 @@ mod tests {
     fn test_parse_application() {
         check(
             "λx:Bool.x x",
-            T![abs "x", TY![bool; SPAN], T![app T![var 0; S![9, 10]], T![var 0; S![11, 12]]; S![9, 12]]; S![0, 12]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 12 }, kind: Application(Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) }, Term { span: Span { lo: 11, hi: 12 }, kind: Variable(0) }) }) })"#
+            ]],
         );
     }
 
     #[test]
     fn test_parse_parenthesis() {
-        let x = T![var 0; S![19, 20]];
-        let y = T![var 0; S![22, 23]];
         check(
             "λy:Bool.(λx:Bool.x) y",
-            T![abs "y", TY![bool; SPAN], T![app T![abs "x", TY![bool; SPAN], x; S![10, 20]], y; S![9, 23]]; S![0, 23]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 23 }, kind: Abstraction(Symbol("y"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 23 }, kind: Application(Term { span: Span { lo: 9, hi: 21 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, Term { span: Span { lo: 19, hi: 20 }, kind: Variable(0) }) }, Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) }) }) })"#
+            ]],
         );
     }
 
@@ -491,86 +540,49 @@ mod tests {
 
     /// A single term inside parentheses should parse to the term inside.
     #[test]
-    fn test_parse_single_term_inside_parentheses() -> Result<()> {
-        let env = base_env();
-        assert_eq!(parse("(λx:Bool.x)", &env)?, parse(" λx:Bool.x", &env)?);
-        Ok(())
+    fn test_parse_single_term_inside_parentheses() {
+        check(
+            "(λx:Bool.x)",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, Term { span: Span { lo: 10, hi: 11 }, kind: Variable(0) }) })"#
+            ]],
+        );
     }
 
     #[test]
     fn test_pparse_aren_type() {
         check(
             "λx:(Bool).x",
-            T![abs "x", TY![bool; SPAN], T![var 0; S![11, 12]]; S![0, 12]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, Term { span: Span { lo: 11, hi: 12 }, kind: Variable(0) }) })"#
+            ]],
         );
     }
 
     #[test]
     fn test_parse_arrow_types() {
         // Bool → Bool
-        let b_b_ty = TY![abs TY![bool; SPAN], TY![bool; SPAN]; SPAN];
         check(
             "λf:Bool → Bool.λb:Bool.f b",
-            T![abs "f", b_b_ty, T![abs "b", TY![bool; SPAN], T![app T![var 1; S![27, 28]], T![var 0; S![29, 30]]; S![27, 30]]; S![18, 30]]; S![0, 30]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 30 }, kind: Abstraction(Symbol("f"), Ty { span: Span { lo: 4, hi: 17 }, kind: Abstraction(Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }) }, Term { span: Span { lo: 18, hi: 30 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 22, hi: 26 }, kind: Bool }, Term { span: Span { lo: 27, hi: 30 }, kind: Application(Term { span: Span { lo: 27, hi: 28 }, kind: Variable(1) }, Term { span: Span { lo: 29, hi: 30 }, kind: Variable(0) }) }) }) })"#
+            ]],
         );
 
         // arrow is right associative
         // Bool → Bool → Bool = Bool → (Bool → Bool)
-        let b_b_b_ty = TY![abs TY![bool; SPAN], b_b_ty; SPAN];
         check(
             "λf:Bool → Bool → Bool.λb1:Bool.λb2:Bool.f b1 b2",
-            T![
-                abs
-                "f",
-                b_b_b_ty,
-                T![
-                    abs
-                    "b1",
-                    TY![bool; SPAN],
-                    T![
-                        abs
-                        "b2",
-                        TY![bool; SPAN],
-                        T![
-                            app
-                            T![
-                                app
-                                T![var 2; S![47, 48]],
-                                T![var 1; S![49, 51]];
-                                S![47, 51]
-                            ],
-                            T![var 0; S![52, 54]];
-                            S![47, 54]
-                        ];
-                        S![37, 54]
-                    ];
-                    S![27, 54]
-                ];
-            S![0, 54]
-            ],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 54 }, kind: Abstraction(Symbol("f"), Ty { span: Span { lo: 4, hi: 26 }, kind: Abstraction(Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Ty { span: Span { lo: 13, hi: 26 }, kind: Abstraction(Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }, Ty { span: Span { lo: 22, hi: 26 }, kind: Bool }) }) }, Term { span: Span { lo: 27, hi: 54 }, kind: Abstraction(Symbol("b1"), Ty { span: Span { lo: 32, hi: 36 }, kind: Bool }, Term { span: Span { lo: 37, hi: 54 }, kind: Abstraction(Symbol("b2"), Ty { span: Span { lo: 42, hi: 46 }, kind: Bool }, Term { span: Span { lo: 47, hi: 54 }, kind: Application(Term { span: Span { lo: 47, hi: 51 }, kind: Application(Term { span: Span { lo: 47, hi: 48 }, kind: Variable(2) }, Term { span: Span { lo: 49, hi: 51 }, kind: Variable(1) }) }, Term { span: Span { lo: 52, hi: 54 }, kind: Variable(0) }) }) }) }) })"#
+            ]],
         );
 
-        let b_b_b_ty_2 = TY![abs b_b_ty, TY![bool; SPAN]; SPAN];
         check(
             "λf:(Bool → Bool) → Bool.λb:Bool → Bool.f b",
-            T![
-                abs
-                "f",
-                b_b_b_ty_2,
-                T![
-                    abs
-                    "b",
-                    TY![abs TY![bool; SPAN], TY![bool; SPAN]; SPAN],
-                    T![
-                        app
-                        T![var 1; S![47, 48]],
-                        T![var 0; S![49, 50]];
-                        S![47, 50]
-                    ];
-                    S![29, 50]
-                ];
-                S![0, 50]
-            ],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 50 }, kind: Abstraction(Symbol("f"), Ty { span: Span { lo: 5, hi: 28 }, kind: Abstraction(Ty { span: Span { lo: 5, hi: 18 }, kind: Abstraction(Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }) }, Ty { span: Span { lo: 24, hi: 28 }, kind: Bool }) }, Term { span: Span { lo: 29, hi: 50 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 33, hi: 46 }, kind: Abstraction(Ty { span: Span { lo: 33, hi: 37 }, kind: Bool }, Ty { span: Span { lo: 42, hi: 46 }, kind: Bool }) }, Term { span: Span { lo: 47, hi: 50 }, kind: Application(Term { span: Span { lo: 47, hi: 48 }, kind: Variable(1) }, Term { span: Span { lo: 49, hi: 50 }, kind: Variable(0) }) }) }) })"#
+            ]],
         );
     }
 
@@ -583,13 +595,9 @@ mod tests {
                 λx:Bool.x
             else
                 λx:Bool.false",
-            T![
-                if
-                T![app T![abs "x", TY![bool; SPAN], T![var 0; S![29, 30]]; S![20, 30]], T![true; S![32, 36]]; S![19, 36]],
-                T![abs "x", TY![bool; SPAN], T![var 0; S![79, 80]]; S![70, 80]],
-                T![abs "x", TY![bool; SPAN], T![false; S![123, 128]]; S![114, 128]];
-                S![0, 128]
-            ],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 128 }, kind: If(Term { span: Span { lo: 19, hi: 36 }, kind: Application(Term { span: Span { lo: 19, hi: 31 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 24, hi: 28 }, kind: Bool }, Term { span: Span { lo: 29, hi: 30 }, kind: Variable(0) }) }, Term { span: Span { lo: 32, hi: 36 }, kind: True }) }, Term { span: Span { lo: 70, hi: 80 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 74, hi: 78 }, kind: Bool }, Term { span: Span { lo: 79, hi: 80 }, kind: Variable(0) }) }, Term { span: Span { lo: 114, hi: 128 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 118, hi: 122 }, kind: Bool }, Term { span: Span { lo: 123, hi: 128 }, kind: False }) }) })"#
+            ]],
         );
     }
 
@@ -597,52 +605,104 @@ mod tests {
     fn test_parse_base_type() {
         check(
             "λx:A.x",
-            T![abs "x", TY![base "A"; SPAN], T![var 0; S![6, 7]]; S![0, 7]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 7 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 5 }, kind: Base(Symbol("A")) }, Term { span: Span { lo: 6, hi: 7 }, kind: Variable(0) }) })"#
+            ]],
         );
         check(
             "λx:A → A.x",
-            T![abs "x", TY![abs TY![base "A"; SPAN], TY![base "A"; SPAN]; SPAN], T![var 0; S![12, 13]]; S![0, 13]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 13 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 11 }, kind: Abstraction(Ty { span: Span { lo: 4, hi: 5 }, kind: Base(Symbol("A")) }, Ty { span: Span { lo: 10, hi: 11 }, kind: Base(Symbol("A")) }) }, Term { span: Span { lo: 12, hi: 13 }, kind: Variable(0) }) })"#
+            ]],
         );
     }
 
     #[test]
     fn test_parse_nats() {
-        check("0", T![0; S![0, 1]]);
-        check("1", T![succ T![0; S![0, 1]]; S![0, 1]]);
+        check(
+            "0",
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 1 }, kind: Zero })"#]],
+        );
+        check(
+            "1",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Zero }) })"#
+            ]],
+        );
         check(
             "5",
-            T![succ T![succ T![succ T![succ T![succ T![0; S![0, 1]]; S![0, 1]]; S![0, 1]]; S![0, 1]]; S![0, 1]]; S![0, 1]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Zero }) }) }) }) }) })"#
+            ]],
         );
         // We parse it, but the typechecker throws an error
-        check("0 0", T![app T![0; S![0, 1]], T![0; S![2, 3]]; S![0, 3]]);
+        check(
+            "0 0",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 3 }, kind: Application(Term { span: Span { lo: 0, hi: 1 }, kind: Zero }, Term { span: Span { lo: 2, hi: 3 }, kind: Zero }) })"#
+            ]],
+        );
         check(
             "λx:Nat.x",
-            T![abs "x", TY![nat; SPAN], T![var 0; S![8, 9]]; S![0, 9]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 9 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 7 }, kind: Nat }, Term { span: Span { lo: 8, hi: 9 }, kind: Variable(0) }) })"#
+            ]],
         );
-        check("pred 0", T![pred T![0; S![5, 6]]; S![0, 6]]);
-        check("pred true", T![pred T![true; S![5, 9]]; S![0, 9]]);
-        check("succ 0", T![succ T![0; S![5, 6]]; S![0, 6]]);
-        check("iszero 0", T![iszero T![0; S![7, 8]]; S![0, 8]]);
+        check(
+            "pred 0",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 6 }, kind: Pred(Term { span: Span { lo: 5, hi: 6 }, kind: Zero }) })"#
+            ]],
+        );
+        check(
+            "pred true",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 9 }, kind: Pred(Term { span: Span { lo: 5, hi: 9 }, kind: True }) })"#
+            ]],
+        );
+        check(
+            "succ 0",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 6 }, kind: Succ(Term { span: Span { lo: 5, hi: 6 }, kind: Zero }) })"#
+            ]],
+        );
+        check(
+            "iszero 0",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: IsZero(Term { span: Span { lo: 7, hi: 8 }, kind: Zero }) })"#
+            ]],
+        );
         check(
             "iszero pred 0",
-            T![iszero T![pred T![0; S![12, 13]]; S![7, 13]]; S![0, 13]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 13 }, kind: IsZero(Term { span: Span { lo: 7, hi: 13 }, kind: Pred(Term { span: Span { lo: 12, hi: 13 }, kind: Zero }) }) })"#
+            ]],
         );
         check(
             "if iszero pred 0 then false else true",
-            T![if T![iszero T![pred T![0; S![15, 16]]; S![10, 16]]; S![3, 16]], T![false; S![22, 27]], T![true; S![33, 37]]; S![0, 37]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 37 }, kind: If(Term { span: Span { lo: 3, hi: 16 }, kind: IsZero(Term { span: Span { lo: 10, hi: 16 }, kind: Pred(Term { span: Span { lo: 15, hi: 16 }, kind: Zero }) }) }, Term { span: Span { lo: 22, hi: 27 }, kind: False }, Term { span: Span { lo: 33, hi: 37 }, kind: True }) })"#
+            ]],
         );
     }
 
     #[test]
     fn test_parse_unit() {
-        check("unit", T![unit; S![0, 4]]);
+        check(
+            "unit",
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 4 }, kind: Unit })"#]],
+        );
         check(
             "λx:Nat.unit",
-            T![abs "x", TY![nat; SPAN], T![unit; S![8, 12]]; S![0, 12]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 7 }, kind: Nat }, Term { span: Span { lo: 8, hi: 12 }, kind: Unit }) })"#
+            ]],
         );
         check(
             "λx:Unit.x",
-            T![abs "x", TY![unit; SPAN], T![var 0; S![9, 10]]; S![0, 10]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 10 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Unit }, Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) }) })"#
+            ]],
         );
     }
 
@@ -650,24 +710,34 @@ mod tests {
     fn test_parse_ascription() {
         check(
             "true as Bool",
-            T![asc T![true; S![0, 4]], TY![bool; SPAN]; S![0, 12]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Ascription(Term { span: Span { lo: 0, hi: 4 }, kind: True }, Ty { span: Span { lo: 8, hi: 12 }, kind: Bool }) })"#
+            ]],
         );
         // Correct precedence
         check(
             "succ 0 as Nat",
-            T![succ T![asc T![0; S![5, 6]], TY![nat; SPAN]; S![5, 13]]; S![0, 13]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 13 }, kind: Succ(Term { span: Span { lo: 5, hi: 13 }, kind: Ascription(Term { span: Span { lo: 5, hi: 6 }, kind: Zero }, Ty { span: Span { lo: 10, hi: 13 }, kind: Nat }) }) })"#
+            ]],
         );
         check(
             "(succ 0) as Nat",
-            T![asc T![succ T![0; S![6, 7]]; S![1, 7]], TY![nat; SPAN]; S![1, 15]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 15 }, kind: Ascription(Term { span: Span { lo: 0, hi: 8 }, kind: Succ(Term { span: Span { lo: 6, hi: 7 }, kind: Zero }) }, Ty { span: Span { lo: 12, hi: 15 }, kind: Nat }) })"#
+            ]],
         );
         check(
             "λx:Bool.x as Bool",
-            T![abs "x", TY![bool; SPAN], T![asc T![var 0; S![9, 10]], TY![bool; SPAN]; S![9, 18]]; S![0, 18]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 18 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 18 }, kind: Ascription(Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) }, Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }) }) })"#
+            ]],
         );
         check(
             "(λx:Bool.x) as Bool → Bool",
-            T![asc T![abs "x", TY![bool; SPAN], T![var 0; S![10, 11]]; S![1, 11]], TY![abs TY![bool; SPAN], TY![bool; SPAN]; SPAN]; S![1, 29]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 29 }, kind: Ascription(Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, Term { span: Span { lo: 10, hi: 11 }, kind: Variable(0) }) }, Ty { span: Span { lo: 16, hi: 29 }, kind: Abstraction(Ty { span: Span { lo: 16, hi: 20 }, kind: Bool }, Ty { span: Span { lo: 25, hi: 29 }, kind: Bool }) }) })"#
+            ]],
         );
     }
 
@@ -680,15 +750,21 @@ mod tests {
     fn test_parse_let_bindings() {
         check(
             "let x = true in x",
-            T![let "x", T![true; S![8, 12]], T![var 0; S![16, 17]]; S![0, 17]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 17 }, kind: Let(Symbol("x"), Term { span: Span { lo: 8, hi: 12 }, kind: True }, Term { span: Span { lo: 16, hi: 17 }, kind: Variable(0) }) })"#
+            ]],
         );
         check(
             "let not = λb:Bool.if b then false else true in not true",
-            T![let "not", T![abs "b", TY![bool; SPAN], T![if T![var 0; S![22, 23]], T![false; S![29, 34]], T![true; S![40, 44]]; S![19, 44]]; S![10, 44]], T![app T![var 0; S![48, 51]], T![true; S![52, 56]]; S![48, 56]]; S![0, 56]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 56 }, kind: Let(Symbol("not"), Term { span: Span { lo: 10, hi: 44 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, Term { span: Span { lo: 19, hi: 44 }, kind: If(Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) }, Term { span: Span { lo: 29, hi: 34 }, kind: False }, Term { span: Span { lo: 40, hi: 44 }, kind: True }) }) }, Term { span: Span { lo: 48, hi: 56 }, kind: Application(Term { span: Span { lo: 48, hi: 51 }, kind: Variable(0) }, Term { span: Span { lo: 52, hi: 56 }, kind: True }) }) })"#
+            ]],
         );
         check(
             "let x = let y = false in y in x",
-            T![let "x", T![let "y", T![false; S![16, 21]], T![var 0; S![25, 26]]; S![8, 26]], T![var 0; S![30, 31]]; S![0, 31]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 31 }, kind: Let(Symbol("x"), Term { span: Span { lo: 8, hi: 26 }, kind: Let(Symbol("y"), Term { span: Span { lo: 16, hi: 21 }, kind: False }, Term { span: Span { lo: 25, hi: 26 }, kind: Variable(0) }) }, Term { span: Span { lo: 30, hi: 31 }, kind: Variable(0) }) })"#
+            ]],
         );
     }
 
@@ -698,40 +774,57 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tuple() {
-        check("{}", T![tuple; S![0, 2]]);
-        check("{true}", T![tuple T![true; S![1, 5]]; S![0, 6]]);
+    fn test_parse_record() {
         check(
+            "{}",
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 2 }, kind: Record({}) })"#]],
+        );
+        check(
+            "{true}",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}) })"#
+            ]],
+        );
+        check_stringify(
             "{λ_:Bool.true, λ_:Bool.false}",
-            T![tuple T![abs "_", TY![bool; SPAN], T![true; S![10, 14]]; S![1, 14]], T![abs "_", TY![bool; SPAN], T![false; S![25, 30]]; S![16, 30]]; S![0, 31]],
+            expect![[r#"{λ_:Bool.true, λ_:Bool.false}"#]],
         );
-        check(
-            "{(λb:Bool.b) true}",
-            T![tuple T![app T![abs "b", TY![bool; SPAN], T![var 0; S![11, 12]]; S![2, 12]], T![true; S![14, 18]]; S![1, 18]]; S![18, 19]],
+        check_stringify("{(λb:Bool.b) true}", expect![[r#"{(λb:Bool.b) true}"#]]);
+        check_stringify(
+            "{first=true, false, last=true}",
+            expect![[r#"{false, first=true, last=true}"#]],
         );
-        check(
-            "{true, false, true}",
-            T![tuple T![true; S![1, 5]], T![false; S![7, 12]], T![true; S![14, 18]]; S![0, 19]],
+        check_stringify(
+            "{first=true, middle=false, last=true}",
+            expect![[r#"{first=true, last=true, middle=false}"#]],
         );
         // We accept trailing commas
-        check("{0,}", T![tuple T![0; S![1, 2]]; S![0, 4]]);
-
         check(
-            "λt:{Bool, Bool}.t",
-            T![abs "t", TY![tuple TY![bool; SPAN], TY![bool; SPAN]; SPAN], T![var 0; S![17, 18]]; S![0, 18]],
+            "{0,}",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 4 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 2 }, kind: Zero }}) })"#
+            ]],
         );
-        check(
+
+        check_stringify(
+            "λt:{x:Bool, y:Bool}.t",
+            expect![[r#"λt:{x:Bool, y:Bool}.t"#]],
+        );
+        check_stringify("λt:{Bool, Bool}.t", expect![[r#"λt:{Bool, Bool}.t"#]]);
+        check_stringify(
             "λt:{{Unit, Unit}, Bool}.t",
-            T![abs "t", TY![tuple TY![tuple TY![unit; SPAN], TY![unit; SPAN]; SPAN], TY![bool; SPAN]; SPAN], T![var 0; S![25, 26]]; S![0, 26]],
+            expect![[r#"λt:{{Unit, Unit}, Bool}.t"#]],
         );
         check(
             "λt:{}.t",
-            T![abs "t", TY![tuple; SPAN], T![var 0; S![7, 8]]; S![0, 8]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Abstraction(Symbol("t"), Ty { span: Span { lo: 4, hi: 6 }, kind: Record({}) }, Term { span: Span { lo: 7, hi: 8 }, kind: Variable(0) }) })"#
+            ]],
         );
     }
 
     #[test]
-    fn error_parse_tuple() {
+    fn error_parse_record() {
         check_error("{", "Expected a term or `}`, got `<eof>`");
         check_error("{true", "Expected `,` or `}`, got `<eof>`");
         check_error("{true,", "Expected a term or `}`, got `<eof>`");
@@ -742,26 +835,27 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_tuple_projection() {
+    fn test_parse_record_projection() {
         check(
             "{true}.1",
-            T![proj T![tuple T![true; S![1, 5]]; S![0, 6]], 1; S![0, 8]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}) }, Symbol("1")) })"#
+            ]],
         );
-        check(
-            "{} as {Bool, Bool}.1 as Bool",
-            T![asc T![proj T![asc T![tuple; S![0, 2]], TY![tuple TY![bool; SPAN], TY![bool; SPAN]; SPAN]; S![0, 19]], 1; S![0, 20]], TY![bool; SPAN]; S![0, 28]],
-        );
+        check_stringify("{} as {Bool, Bool}.1 as Bool", expect![[r#"{}.1"#]]);
         check(
             "{true}.1 as Bool",
-            T![asc T![proj T![tuple T![true; S![1, 5]]; S![0, 6]], 1; S![0, 8]], TY![bool; SPAN]; S![0, 16]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 16 }, kind: Ascription(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}) }, Symbol("1")) }, Ty { span: Span { lo: 12, hi: 16 }, kind: Bool }) })"#
+            ]],
         );
-        check(
+        check_stringify(
             "{{true, unit}.1, 0}.2 as Nat",
-            T![asc T![proj T![tuple T![proj T![tuple T![true; S![2, 6]], T![unit; S![8, 12]]; S![1, 13]], 1; S![1, 15]], T![0; S![17, 18]]; S![0, 19]], 2; S![0, 21]], TY![nat; SPAN]; S![0, 28]],
+            expect![[r#"{{true, unit}.1, 0}.2"#]],
         );
-        check(
+        check_stringify(
             "{{true, unit}.1, 0}.1.1",
-            T![proj T![proj T![tuple T![proj T![tuple T![true; S![2, 6]], T![unit; S![8, 12]]; S![1, 13]], 1; S![1, 15]], T![0; S![17, 18]]; S![0, 19]], 1; S![0, 21]], 1; S![0, 23]],
+            expect![[r#"{{true, unit}.1, 0}.1.1"#]],
         );
     }
 }

@@ -64,8 +64,8 @@ t ::=                   terms:
     unit                        constant unit
     t as T                      ascription
     let x = t in t              let binding
-    { tᵢ (i∈1..n) }             tuple
-    t.i                         projection
+    { lᵢ=tᵢ (i∈1..n) }          record
+    t.l                         projection
 
 v ::=                   values:
     λx:T.t                      abstraction value
@@ -73,7 +73,7 @@ v ::=                   values:
     false                       false value
     nv                          numeric value
     unit                        constant unit
-    { vᵢ (i∈1..n) }             tuple value
+    { lᵢ=vᵢ (i∈1..n) }          record value
 
 nv ::=                  numeric values:
     0                           zero value
@@ -86,7 +86,7 @@ T ::=                   types:
     Nat                         type of natural numbers
     A                           base type
     Unit                        unit type
-    { Tᵢ (i∈1..n) }             tuple type
+    { lᵢ:Tᵢ (i∈1..n) }          type of records
 
 Γ ::=                   contexts:
     ∅                           empty context
@@ -140,16 +140,16 @@ let x = v₁ in t₂ → [x ↦ v₁]t₂           E-LetV
 ------------------------------------    E-Let
 let x = t₁ in t₂ → let x = t′₁ in t₂
 
-{ vᵢ (i∈1..n) }.j → vⱼ                  E-ProjTuple
+{ lᵢ=vᵢ (i∈1..n) }.lⱼ → vⱼ              E-ProjRcd
 
   t₁ → t′₁
 ------------                            E-Proj
 t₁.i → t′₁.i
 
                 tⱼ → t′ⱼ
---------------------------------------  E-Tuple (Tuples' elements are evaluated from left to right)
-{ vᵢ (i∈1..j-1), tⱼ, tₖ (k∈j+1..n) } →
-{ vᵢ (i∈1..j-1), t′ⱼ, tₖ (k∈j+1..n) }
+--------------------------------------  E-Rcd
+{ lᵢ=vᵢ (i∈1..j-1) ,lⱼ=tⱼ  ,lₖ=tₖ (k∈j+1..n) } →
+{ lᵢ=vᵢ (i∈1..j-1), lⱼ=t′ⱼ ,lₖ=tₖ (k∈j+1..n) }
 ```
 
 ## Typing
@@ -202,12 +202,12 @@ iszero t₁ : Bool
     Γ ⊢ let x = t₁ in t₂ : T₂
 
    for each i      Γ ⊢ tᵢ : Tᵢ
----------------------------------       T-Tuple
-Γ ⊢ {tᵢ (i∈1..n)} : {Tᵢ (i∈1..n)}
+--------------------------------------- T-Rcd
+Γ ⊢ {lᵢ=tᵢ (i∈1..n)} : {lᵢ:Tᵢ (i∈1..n)}
 
-Γ ⊢ t₁ : {Tᵢ (i∈1..n)}
-----------------------                  T-Proj
-     Γ ⊢ t₁.j : Tⱼ
+Γ ⊢ t₁ : {lᵢ:Tᵢ (i∈1..n)}
+-------------------------               T-Proj
+    Γ ⊢ t₁.lⱼ : Tⱼ
 ```
 
 ## Derived forms

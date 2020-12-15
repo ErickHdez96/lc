@@ -1,5 +1,5 @@
 use crate::{Env, Error, ErrorKind, LTerm, Span, Symbol, TermKind, TY};
-use std::{fmt, rc::Rc};
+use std::{collections::HashMap, fmt, rc::Rc};
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -39,7 +39,7 @@ pub enum TyKind {
     Unit,
     Base(Symbol),
     Abstraction(LTy, LTy),
-    Tuple(Vec<LTy>),
+    Record(HashMap<Symbol, LTy>),
 }
 
 pub type LTy = Rc<Ty>;
@@ -64,6 +64,14 @@ impl fmt::Display for Ty {
 
 impl fmt::Display for TyKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn symbol_to_record_key(s: Symbol) -> String {
+            if s.as_str().parse::<u64>().is_ok() {
+                String::new()
+            } else {
+                format!("{}:", s)
+            }
+        }
+
         match self {
             Self::Bool => write!(f, "Bool"),
             Self::Nat => write!(f, "Nat"),
@@ -77,13 +85,14 @@ impl fmt::Display for TyKind {
                 };
                 write!(f, "{}{}{} → {}", l_paren, t1, r_paren, t2)
             }
-            Self::Tuple(elems) => {
+            Self::Record(elems) => {
+                let mut keys = elems.keys().cloned().collect::<Vec<_>>();
+                keys.sort();
                 write!(
                     f,
                     "{{{}}}",
-                    elems
-                        .iter()
-                        .map(ToString::to_string)
+                    keys.into_iter()
+                        .map(|k| format!("{}{}", symbol_to_record_key(k), elems.get(&k).unwrap()))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -155,30 +164,27 @@ pub fn type_of(type_t: &LTerm, env: &Env) -> Result<LTy> {
             env.insert_local(x, t1);
             type_of(t2, &env)
         }
-        TermKind::Tuple(ref elems) => elems
+        TermKind::Record(ref elems) => elems
             .iter()
-            .map(|e| type_of(e, &env))
-            .collect::<Result<Vec<_>>>()
+            .map(|(k, e)| type_of(e, &env).map(|e| (*k, e)))
+            .collect::<Result<HashMap<_, _>>>()
             .map(|elems| {
                 Rc::new(Ty {
-                    kind: TyKind::Tuple(elems),
+                    kind: TyKind::Record(elems),
                     span: type_t.span,
                 })
             }),
-        TermKind::Projection(ref tuple, elem_no) => {
-            let tuple = type_of(tuple, &env)?;
-            match tuple.as_ref().kind {
-                TyKind::Tuple(ref elems) if elem_no > 0 => match elems.get(elem_no - 1) {
+        TermKind::Projection(ref record, elem) => {
+            let record = type_of(record, &env)?;
+            match record.as_ref().kind {
+                TyKind::Record(ref elems) => match elems.get(&elem) {
                     Some(elem) => Ok(elem.clone()),
                     None => Err(error!(
-                        "The element `{}` does not exist on the tuple `{}`",
-                        elem_no, tuple; type_t.span
+                        "The element `{}` does not exist on the record `{}`",
+                        elem, record; type_t.span
                     )),
                 },
-                TyKind::Tuple(_) => Err(error!(
-                    "Cannot access a tuple with `0`, projections start from `1`"; type_t.span
-                )),
-                _ => Err(error!("Only a tuple can be projected, got `{}`", tuple; tuple.span)),
+                _ => Err(error!("Only a record can be projected, got `{}`", record; record.span)),
             }
         }
     }
@@ -201,64 +207,57 @@ macro_rules! TY {
     (abs $t1:expr, $t2:expr; $span:expr) => {
         Rc::new(Ty { kind: TyKind::Abstraction($t1.clone(), $t2.clone()), span: $span.into() })
     };
-    (tuple $($term:expr),*; $span:expr) => {
-        Rc::new(Ty { kind: TyKind::Tuple(vec![$($term.clone()),*]), span: $span.into() })
+    (record $($term:expr),*; $span:expr) => {
+        Rc::new(Ty { kind: TyKind::Record(vec![$($term.clone()),*]), span: $span.into() })
     };
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{parse, Term, S, T};
+    use crate::parse;
+    use expect_test::expect;
 
     const SPAN: Span = Span::new(0, 1);
 
-    fn check_parse(input: &str, expected: LTy) {
+    fn check(input: &str, expected: expect_test::Expect) {
         let env = Env::new();
-        assert_eq!(
-            type_of(&parse(input, &env).expect("Couldn't parse"), &env)
-                .expect("Couldn't type check"),
-            expected
-        );
+        expected.assert_eq(&format!(
+            "{}",
+            &type_of(&parse(input, &env).expect("Couldn't parse"), &env)
+                .expect("Couldn't evaluate")
+        ));
     }
 
-    fn check_parse_error(input: &str, expected: &str) {
+    fn check_parse_error(input: &str, expected: expect_test::Expect) {
         let env = Env::new();
-        assert_eq!(
-            type_of(&parse(input, &env).expect("Couldn't parse"), &env)
+        expected.assert_eq(
+            &type_of(&parse(input, &env).expect("Couldn't parse"), &env)
                 .expect_err("Shouldn't type check correctly")
                 .to_string(),
-            format!("TypeError: {}", expected),
         );
-    }
-
-    fn check(t: LTerm, expected: LTy) {
-        let env = Env::new();
-        assert_eq!(type_of(&t, &env).expect("Couldn't type check"), expected);
     }
 
     #[test]
     fn test_constant_types() {
-        check(T![true; (0u32, 4u32)], TY![bool; S![0, 4]]);
+        check("true", expect![[r#"Bool"#]]);
     }
 
     #[test]
     fn test_types() {
-        let bool_ty = TY![bool; SPAN];
-        check_parse("λx:Bool.x", TY![abs bool_ty, bool_ty; SPAN]);
+        check("λx:Bool.x", expect![[r#"Bool → Bool"#]]);
         // (Bool → Bool) → Bool → Bool
-        check_parse(
+        check(
             "λf:Bool→Bool.λb:Bool.f b",
-            TY![abs TY![abs bool_ty, bool_ty; SPAN], TY![abs bool_ty, bool_ty; SPAN]; SPAN],
+            expect![[r#"(Bool → Bool) → Bool → Bool"#]],
         );
     }
 
     #[test]
     fn test_if() {
-        let bool_ty = TY![bool; SPAN];
-        check_parse(
+        check(
             "if (λx:Bool.x) true then λx:Bool.false else λx:Bool.x",
-            TY![abs bool_ty, bool_ty; SPAN],
+            expect![[r#"Bool → Bool"#]],
         );
     }
 
@@ -266,12 +265,15 @@ mod tests {
     fn test_wrong_application_types() {
         check_parse_error(
             "(λx:Bool.x)(λx:Bool.x)",
-            "Expected type `Bool`, got `Bool → Bool`",
+            expect![["TypeError: Expected type `Bool`, got `Bool → Bool`"]],
         );
-        check_parse_error("true λx:Bool.x", "Expected an abstraction, got `Bool`");
+        check_parse_error(
+            "true λx:Bool.x",
+            expect![["TypeError: Expected an abstraction, got `Bool`"]],
+        );
         check_parse_error(
             "λf:Bool → Bool.λx:Bool.x f",
-            "Expected an abstraction, got `Bool`",
+            expect![["TypeError: Expected an abstraction, got `Bool`"]],
         );
     }
 
@@ -279,11 +281,13 @@ mod tests {
     fn test_wrong_if_types() {
         check_parse_error(
             "if λx:Bool.x then true else false",
-            "Guard conditional expects a Bool, got `Bool → Bool`",
+            expect![["TypeError: Guard conditional expects a Bool, got `Bool → Bool`"]],
         );
         check_parse_error(
             "if true then true else λx:Bool.x",
-            "Arms of conditional have different types: `Bool`, and `Bool → Bool`",
+            expect![[
+                "TypeError: Arms of conditional have different types: `Bool`, and `Bool → Bool`"
+            ]],
         );
     }
 
@@ -299,149 +303,171 @@ mod tests {
 
     #[test]
     fn test_typecheck_base_types() {
-        check_parse(
-            "λx:A.x",
-            TY![abs TY![base "A"; SPAN], TY![base "A"; SPAN]; SPAN],
-        );
-        check_parse(
-            "λx:B.x",
-            TY![abs TY![base "B"; SPAN], TY![base "B"; SPAN]; SPAN],
-        );
-        check_parse(
-            "λf:A → A.λx:A. f(f(x))",
-            TY![abs TY![abs TY![base "A"; SPAN], TY![base "A"; SPAN]; SPAN], TY![abs TY![base "A"; SPAN], TY![base "A"; SPAN]; SPAN]; SPAN],
-        );
+        check("λx:A.x", expect![[r#"A → A"#]]);
+        check("λx:B.x", expect![[r#"B → B"#]]);
+        check("λf:A → A.λx:A. f(f(x))", expect![[r#"(A → A) → A → A"#]]);
     }
 
     #[test]
     fn test_typecheck_nat() {
-        check_parse("0", TY![nat; SPAN]);
-        check_parse("5", TY![nat; SPAN]);
-        check_parse("pred 0", TY![nat; SPAN]);
-        check_parse("pred pred pred 0", TY![nat; SPAN]);
-        check_parse("succ 0", TY![nat; SPAN]);
-        check_parse("succ succ succ 0", TY![nat; SPAN]);
-        check_parse("pred succ 0", TY![nat; SPAN]);
-        check_parse("iszero 0", TY![bool; SPAN]);
-        check_parse("iszero pred succ 0", TY![bool; SPAN]);
+        check("0", expect![[r#"Nat"#]]);
+        check("5", expect![[r#"Nat"#]]);
+        check("pred 0", expect![[r#"Nat"#]]);
+        check("pred pred pred 0", expect![[r#"Nat"#]]);
+        check("succ 0", expect![[r#"Nat"#]]);
+        check("succ succ succ 0", expect![[r#"Nat"#]]);
+        check("pred succ 0", expect![[r#"Nat"#]]);
+        check("iszero 0", expect![[r#"Bool"#]]);
+        check("iszero pred succ 0", expect![[r#"Bool"#]]);
 
         // is_greater_than_one
-        check_parse(
-            "λx:Nat.iszero pred x",
-            TY![abs TY![nat; SPAN], TY![bool; SPAN]; SPAN],
-        );
-        check_parse("(λx:Nat.iszero pred x) 0", TY![bool; SPAN]);
+        check("λx:Nat.iszero pred x", expect![[r#"Nat → Bool"#]]);
+        check("(λx:Nat.iszero pred x) 0", expect![[r#"Bool"#]]);
     }
 
     #[test]
     fn error_typecheck_nat() {
-        check_parse_error("pred true", "Expected type `Nat`, got `Bool`");
-        check_parse_error("succ true", "Expected type `Nat`, got `Bool`");
+        check_parse_error(
+            "pred true",
+            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+        );
+        check_parse_error(
+            "succ true",
+            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+        );
         check_parse_error(
             "succ succ succ pred succ true",
-            "Expected type `Nat`, got `Bool`",
+            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
         );
-        check_parse_error("iszero true", "Expected type `Nat`, got `Bool`");
-        check_parse_error("pred iszero 0", "Expected type `Nat`, got `Bool`");
-        check_parse_error("pred iszero true", "Expected type `Nat`, got `Bool`");
+        check_parse_error(
+            "iszero true",
+            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+        );
+        check_parse_error(
+            "pred iszero 0",
+            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+        );
+        check_parse_error(
+            "pred iszero true",
+            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+        );
         check_parse_error(
             "if 0 then true else false",
-            "Guard conditional expects a Bool, got `Nat`",
+            expect![["TypeError: Guard conditional expects a Bool, got `Nat`"]],
         );
         check_parse_error(
             "if iszero pred succ 0 then true else 0",
-            "Arms of conditional have different types: `Bool`, and `Nat`",
+            expect![["TypeError: Arms of conditional have different types: `Bool`, and `Nat`"]],
         );
     }
 
     #[test]
     fn test_typecheck_unit() {
-        check_parse("unit", TY![unit; SPAN]);
-        check_parse("λx:Unit.x", TY![abs TY![unit; SPAN], TY![unit; SPAN]; SPAN]);
-        check_parse(
-            "λx:Nat.unit",
-            TY![abs TY![nat; SPAN], TY![unit; SPAN]; SPAN],
-        );
-        check_parse("(λ_:Unit.unit)unit", TY![unit; SPAN]);
+        check("unit", expect![[r#"Unit"#]]);
+        check("λx:Unit.x", expect![[r#"Unit → Unit"#]]);
+        check("λx:Nat.unit", expect![[r#"Nat → Unit"#]]);
+        check("(λ_:Unit.unit)unit", expect![[r#"Unit"#]]);
     }
 
     #[test]
     fn error_typecheck_unit() {
-        check_parse_error("iszero unit", "Expected type `Nat`, got `Unit`");
-        check_parse_error("(λx:Nat.unit) unit", "Expected type `Nat`, got `Unit`");
+        check_parse_error(
+            "iszero unit",
+            expect![["TypeError: Expected type `Nat`, got `Unit`"]],
+        );
+        check_parse_error(
+            "(λx:Nat.unit) unit",
+            expect![["TypeError: Expected type `Nat`, got `Unit`"]],
+        );
     }
 
     #[test]
     fn test_typecheck_ascription() {
-        check_parse("true as Bool", TY![bool; SPAN]);
-        check_parse("0 as Nat", TY![nat; SPAN]);
-        check_parse(
-            "(λx:Bool.x) as Bool → Bool",
-            TY![abs TY![bool; SPAN], TY![bool; SPAN]; SPAN],
-        );
+        check("true as Bool", expect![[r#"Bool"#]]);
+        check("0 as Nat", expect![[r#"Nat"#]]);
+        check("(λx:Bool.x) as Bool → Bool", expect![[r#"Bool → Bool"#]]);
     }
 
     #[test]
     fn error_typecheck_ascription() {
-        check_parse_error("true as Nat", "Expected type `Nat`, got `Bool`");
+        check_parse_error(
+            "true as Nat",
+            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+        );
         check_parse_error(
             "(λx:Bool.x) as Bool → Nat",
-            "Expected type `Bool → Nat`, got `Bool → Bool`",
+            expect![["TypeError: Expected type `Bool → Nat`, got `Bool → Bool`"]],
         );
         check_parse_error(
             "λf:Bool → Bool.λb:Bool.(f as Bool → Nat) b",
-            "Expected type `Bool → Nat`, got `Bool → Bool`",
+            expect![["TypeError: Expected type `Bool → Nat`, got `Bool → Bool`"]],
         );
         check_parse_error(
             "(λf:Bool → Bool.λb:Bool.f b) as Bool → Bool → Bool",
-            "Expected type `Bool → Bool → Bool`, got `(Bool → Bool) → Bool → Bool`",
+            expect![[
+                "TypeError: Expected type `Bool → Bool → Bool`, got `(Bool → Bool) → Bool → Bool`"
+            ]],
         );
     }
 
     #[test]
     fn test_typecheck_let_bindings() {
-        check_parse("let x = true in x", TY![bool; SPAN]);
-        check_parse(
+        check("let x = true in x", expect![[r#"Bool"#]]);
+        check(
             "let not = λb:Bool.if b then false else true in not true",
-            TY![bool; SPAN],
+            expect![[r#"Bool"#]],
         );
-        check_parse(
+        check(
             "let not = λb:Bool.if b then false else true in not",
-            TY![abs TY![bool; SPAN], TY![bool; SPAN]; SPAN],
+            expect![[r#"Bool → Bool"#]],
         );
     }
 
     #[test]
     fn error_typecheck_let_bindings() {
-        check_parse_error("let x = true in succ x", "Expected type `Nat`, got `Bool`");
+        check_parse_error(
+            "let x = true in succ x",
+            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+        );
         check_parse_error(
             "let not = λb:Bool.if b then false else true in not 0",
-            "Expected type `Bool`, got `Nat`",
+            expect![["TypeError: Expected type `Bool`, got `Nat`"]],
         );
     }
 
     #[test]
-    fn test_typecheck_tuple() {
-        check_parse(
-            "{true, true}",
-            TY![tuple TY![bool; SPAN], TY![bool; SPAN]; SPAN],
+    fn test_typecheck_record() {
+        check("{true, true}", expect![[r#"{Bool, Bool}"#]]);
+        check(
+            "{first=true, last=true}",
+            expect![[r#"{first:Bool, last:Bool}"#]],
         );
-        check_parse("{0, unit}.2", TY![unit; SPAN]);
-        check_parse("{0, unit}.1", TY![nat; SPAN]);
+        check("{0, unit}.2", expect![[r#"Unit"#]]);
+        check("{0, unit}.1", expect![[r#"Nat"#]]);
+
+        check(
+            "(λrec:{x:Bool,y:Nat}.rec.x){x=true, y=0}",
+            expect![[r#"Bool"#]],
+        );
     }
 
     #[test]
-    fn error_typecheck_tuple() {
+    fn error_typecheck_record() {
         check_parse_error(
-            "{true, 0} as {Bool, Bool}",
-            "Expected type `{Bool, Bool}`, got `{Bool, Nat}`",
+            "{0}.1 as Bool",
+            expect![[r#"TypeError: Expected type `Bool`, got `Nat`"#]],
         );
-        check_parse_error("{0}.1 as Bool", "Expected type `Bool`, got `Nat`");
-        check_parse_error("{{unit}}.1.1 as Bool", "Expected type `Bool`, got `Unit`");
-        check_parse_error("{} as Bool", "Expected type `Bool`, got `{}`");
+        check_parse_error(
+            "{{unit}}.1.1 as Bool",
+            expect![[r#"TypeError: Expected type `Bool`, got `Unit`"#]],
+        );
+        check_parse_error(
+            "{} as Bool",
+            expect![["TypeError: Expected type `Bool`, got `{}`"]],
+        );
         check_parse_error(
             "{true}.0",
-            "Cannot access a tuple with `0`, projections start from `1`",
+            expect![[r#"TypeError: The element `0` does not exist on the record `{Bool}`"#]],
         );
     }
 }

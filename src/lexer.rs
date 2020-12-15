@@ -132,6 +132,13 @@ impl TokenKind {
                 | TokenKind::LBrace
         )
     }
+
+    pub fn can_start_type(self) -> bool {
+        matches!(
+            self,
+            TokenKind::Ident | TokenKind::LParen | TokenKind::LBrace
+        )
+    }
 }
 
 impl<'input> std::fmt::Display for Token<'input> {
