@@ -178,6 +178,7 @@ impl<'a> Parser<'a> {
             TokenKind::LBrace => {
                 let span = self.current_span();
                 self.bump();
+                let mut keys = vec![];
                 let mut terms = HashMap::new();
                 let mut comma_consumed = true;
 
@@ -190,6 +191,7 @@ impl<'a> Parser<'a> {
                         Symbol::from((terms.len() + 1).to_string())
                     };
                     let term = self.parse_application_or_var(&env)?;
+                    keys.push(key);
                     terms.insert(key, term);
                     if self.current() != TokenKind::Comma {
                         comma_consumed = false;
@@ -210,7 +212,7 @@ impl<'a> Parser<'a> {
 
                 let span = span.with_hi(brace_span.hi);
                 Ok(Rc::new(Term {
-                    kind: TermKind::Record(terms),
+                    kind: TermKind::Record(terms, keys),
                     span,
                 }))
             }
@@ -377,6 +379,7 @@ impl<'a> Parser<'a> {
             TokenKind::LBrace => {
                 let span = self.current_span();
                 self.bump();
+                let mut keys = vec![];
                 let mut types = HashMap::new();
                 let mut comma_consumed = true;
 
@@ -389,6 +392,7 @@ impl<'a> Parser<'a> {
                         Symbol::from((types.len() + 1).to_string())
                     };
                     let ty = self.parse_type(&env)?;
+                    keys.push(key);
                     types.insert(key, ty);
                     if self.current() != TokenKind::Comma {
                         comma_consumed = false;
@@ -409,7 +413,7 @@ impl<'a> Parser<'a> {
 
                 let span = span.with_hi(brace_span.hi);
                 Rc::new(Ty {
-                    kind: TyKind::Record(types),
+                    kind: TyKind::Record(types, keys),
                     span,
                 })
             }
@@ -777,13 +781,11 @@ mod tests {
     fn test_parse_record() {
         check(
             "{}",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 2 }, kind: Record({}) })"#]],
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 2 }, kind: Record({}, []) })"#]],
         );
         check(
             "{true}",
-            expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}) })"#
-            ]],
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) })"#]],
         );
         check_stringify(
             "{λ_:Bool.true, λ_:Bool.false}",
@@ -792,18 +794,16 @@ mod tests {
         check_stringify("{(λb:Bool.b) true}", expect![[r#"{(λb:Bool.b) true}"#]]);
         check_stringify(
             "{first=true, false, last=true}",
-            expect![[r#"{false, first=true, last=true}"#]],
+            expect![[r#"{first=true, false, last=true}"#]],
         );
         check_stringify(
             "{first=true, middle=false, last=true}",
-            expect![[r#"{first=true, last=true, middle=false}"#]],
+            expect![[r#"{first=true, middle=false, last=true}"#]],
         );
         // We accept trailing commas
         check(
             "{0,}",
-            expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 4 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 2 }, kind: Zero }}) })"#
-            ]],
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 4 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 2 }, kind: Zero }}, [Symbol("1")]) })"#]],
         );
 
         check_stringify(
@@ -817,9 +817,7 @@ mod tests {
         );
         check(
             "λt:{}.t",
-            expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Abstraction(Symbol("t"), Ty { span: Span { lo: 4, hi: 6 }, kind: Record({}) }, Term { span: Span { lo: 7, hi: 8 }, kind: Variable(0) }) })"#
-            ]],
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Abstraction(Symbol("t"), Ty { span: Span { lo: 4, hi: 6 }, kind: Record({}, []) }, Term { span: Span { lo: 7, hi: 8 }, kind: Variable(0) }) })"#]],
         );
     }
 
@@ -838,16 +836,12 @@ mod tests {
     fn test_parse_record_projection() {
         check(
             "{true}.1",
-            expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}) }, Symbol("1")) })"#
-            ]],
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) }, Symbol("1")) })"#]],
         );
         check_stringify("{} as {Bool, Bool}.1 as Bool", expect![[r#"{}.1"#]]);
         check(
             "{true}.1 as Bool",
-            expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 16 }, kind: Ascription(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}) }, Symbol("1")) }, Ty { span: Span { lo: 12, hi: 16 }, kind: Bool }) })"#
-            ]],
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 16 }, kind: Ascription(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) }, Symbol("1")) }, Ty { span: Span { lo: 12, hi: 16 }, kind: Bool }) })"#]],
         );
         check_stringify(
             "{{true, unit}.1, 0}.2 as Nat",

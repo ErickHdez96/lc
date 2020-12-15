@@ -130,7 +130,7 @@ pub enum TermKind {
     Unit,
     Ascription(LTerm, LTy),
     Let(Symbol, LTerm, LTerm),
-    Record(HashMap<Symbol, LTerm>),
+    Record(HashMap<Symbol, LTerm>, /** Original order of the keys */ Vec<Symbol>),
     Projection(LTerm, Symbol),
 }
 
@@ -227,13 +227,14 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
             env.insert_let_term(x, t1.clone());
             eval_(&term_subst_top(&t1, &t2)?, &env)
         }
-        TermKind::Record(ref elems) => elems
+        TermKind::Record(ref elems, ref keys) => keys
             .iter()
-            .map(|(k, e)| eval_(e, &env).map(|e| (*k, e)))
+            .cloned()
+            .map(|k| eval_(elems.get(&k).unwrap(), &env).map(|e| (k, e)))
             .collect::<Result<HashMap<_, _>>>()
             .map(|elems| {
                 Rc::new(Term {
-                    kind: TermKind::Record(elems),
+                    kind: TermKind::Record(elems, keys.clone()),
                     span: eval_t.span,
                 })
             }),
@@ -245,7 +246,7 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
                 ));
             }
             match t.as_ref().kind {
-                TermKind::Record(ref elems) => match elems.get(&i) {
+                TermKind::Record(ref elems, _) => match elems.get(&i) {
                     Some(e) => Ok(e.clone()),
                     None => Err(error!("Couldn't get element `{}` from record", i; eval_t.span)),
                 },
@@ -331,13 +332,14 @@ where
             TermKind::Pred(ref t) => Ok(T![pred map(t, cutoff, on_var)?; t.span]),
             TermKind::IsZero(ref t) => Ok(T![iszero map(t, cutoff, on_var)?; t.span]),
             TermKind::Ascription(ref t, _) => Ok(T![iszero map(t, cutoff, on_var)?; t.span]),
-            TermKind::Record(ref elems) => elems
+            TermKind::Record(ref elems, ref keys) => keys
                 .iter()
-                .map(|(k, e)| map(e, cutoff, on_var).map(|e| (*k, e)))
+                .cloned()
+                .map(|k| map(elems.get(&k).unwrap(), cutoff, on_var).map(|e| (k, e)))
                 .collect::<Result<HashMap<_, _>>>()
                 .map(|elems| {
                     Rc::new(Term {
-                        kind: TermKind::Record(elems),
+                        kind: TermKind::Record(elems, keys.clone()),
                         span: t.span,
                     })
                 }),
@@ -408,12 +410,11 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
             term_to_string(t1, &env)?,
             term_to_string(t2, &env)?,
         )),
-        TermKind::Record(ref elems) => {
-            let mut keys = elems.keys().cloned().collect::<Vec<_>>();
-            keys.sort();
+        TermKind::Record(ref elems, ref keys) => {
             Ok(format!(
                 "{{{}}}",
-                keys.into_iter()
+                keys.iter()
+                    .cloned()
                     .map(
                         |k| term_to_string(elems.get(&k).unwrap(), &env).map(|e| format!(
                             "{}{}",
