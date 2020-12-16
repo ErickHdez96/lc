@@ -39,7 +39,7 @@ pub enum TyKind {
     Unit,
     Base(Symbol),
     Abstraction(LTy, LTy),
-    Record(HashMap<Symbol, LTy>),
+    Record(HashMap<Symbol, LTy>, /** Original order of the keys */ Vec<Symbol>),
 }
 
 pub type LTy = Rc<Ty>;
@@ -85,13 +85,11 @@ impl fmt::Display for TyKind {
                 };
                 write!(f, "{}{}{} → {}", l_paren, t1, r_paren, t2)
             }
-            Self::Record(elems) => {
-                let mut keys = elems.keys().cloned().collect::<Vec<_>>();
-                keys.sort();
+            Self::Record(elems, keys) => {
                 write!(
                     f,
                     "{{{}}}",
-                    keys.into_iter()
+                    keys.iter().cloned()
                         .map(|k| format!("{}{}", symbol_to_record_key(k), elems.get(&k).unwrap()))
                         .collect::<Vec<_>>()
                         .join(", ")
@@ -164,20 +162,21 @@ pub fn type_of(type_t: &LTerm, env: &Env) -> Result<LTy> {
             env.insert_local(x, t1);
             type_of(t2, &env)
         }
-        TermKind::Record(ref elems) => elems
+        TermKind::Record(ref elems, ref keys) => keys
             .iter()
-            .map(|(k, e)| type_of(e, &env).map(|e| (*k, e)))
+            .cloned()
+            .map(|k| type_of(elems.get(&k).unwrap(), &env).map(|e| (k, e)))
             .collect::<Result<HashMap<_, _>>>()
             .map(|elems| {
                 Rc::new(Ty {
-                    kind: TyKind::Record(elems),
+                    kind: TyKind::Record(elems, keys.clone()),
                     span: type_t.span,
                 })
             }),
         TermKind::Projection(ref record, elem) => {
             let record = type_of(record, &env)?;
             match record.as_ref().kind {
-                TyKind::Record(ref elems) => match elems.get(&elem) {
+                TyKind::Record(ref elems, _) => match elems.get(&elem) {
                     Some(elem) => Ok(elem.clone()),
                     None => Err(error!(
                         "The element `{}` does not exist on the record `{}`",
