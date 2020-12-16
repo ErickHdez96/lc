@@ -1,52 +1,3 @@
-```
-U+22A2 = ⊢
-U+2209 = ∉
-
-U+21A6 = ↦
-
-U+1D62 = ᵢ
-U+2C7C = ⱼ
-U+2096 = ₖ
-
-U+2081 = ₁
-U+2082 = ₂
-
-U+00B9 = ¹
-U+00B2 = ²
-U+00B3 = ³
-
-U+2070 = ⁰
-U+2071 = ⁱ (superscript i)
-
-<C-k>1' = ′ (prime)
-<C-k>l* = λ
-<C-k>(- = ∈
-<C-k>G* = Γ
-<C-k>/0 = ∅
-<C-k>1s = ₁
-<C-k>1S = ¹
-```
-
-```
-   Γ,x:T₁ ⊢ t₂ : T₂
-----------------------          T-Abs
-Γ ⊢ λx:T₁.t₂ : T₁ → T₂
-
-(∅) ⊢ t : T
-
-The closed term t has type T under the empty set of assumptions
-
-x : T ∈ Γ
----------                       T-Var
-Γ ⊢ x : T
-
-The type assumed for x in Γ is T.
-
-Γ ⊢ t₁ : T₁₁ → T₁₂      Γ ⊢ t₂ : T₁₁
-------------------------------------    T-App
-          Γ ⊢ t₁ t₂ : T₁₂
-```
-
 ## Syntactic forms
 
 ```
@@ -66,6 +17,7 @@ t ::=                   terms:
     let x = t in t              let binding
     { lᵢ=tᵢ (i∈1..n) }          record
     t.l                         projection
+    let p = t in t              pattern binding
 
 v ::=                   values:
     λx:T.t                      abstraction value
@@ -79,6 +31,9 @@ nv ::=                  numeric values:
     0                           zero value
     succ nv                     successor value
 
+p ::=                   patterns:
+    x                           variable pattern
+    { lᵢ=pᵢ (i∈1..n) }          record pattern
 
 T ::=                   types:
     T → T                       type of functions
@@ -91,6 +46,17 @@ T ::=                   types:
 Γ ::=                   contexts:
     ∅                           empty context
     Γ,x:T                       term variable binding
+```
+
+## Matching rules
+
+```
+match(x, v) = [x ↦ v]                   M-Var
+
+for each i      match(pᵢ, vᵢ) = σᵢ
+----------------------------------      M-Rcd
+match({ lᵢ=pᵢ (i∈1..n) }, { lᵢ=vᵢ (i∈1..n) }
+        =σ₁ ∘ ··· ∘ σₙ
 ```
 
 ## Evaluation
@@ -134,11 +100,11 @@ v₁ as T → v₁                            E-Ascribe
 ------------------                      E-Ascribe₁
 t₁ as T → t′₁ as T
 
-let x = v₁ in t₂ → [x ↦ v₁]t₂           E-LetV
+let p = v₁ in t₂ → match(p, v₁)t₂       E-LetV
 
               t1 → t′₁
 ------------------------------------    E-Let
-let x = t₁ in t₂ → let x = t′₁ in t₂
+let p = t₁ in t₂ → let p = t′₁ in t₂
 
 { lᵢ=vᵢ (i∈1..n) }.lⱼ → vⱼ              E-ProjRcd
 
@@ -226,4 +192,56 @@ proposition P ⊃ Q               type P → Q
 proposition P ∧ Q               type P x Q
 proof of proposition P          term t of type P
 proposition P is provable       type P is inhabited (by some term)
+```
+```
+   Γ,x:T₁ ⊢ t₂ : T₂
+----------------------          T-Abs
+Γ ⊢ λx:T₁.t₂ : T₁ → T₂
+
+(∅) ⊢ t : T
+
+The closed term t has type T under the empty set of assumptions
+
+x : T ∈ Γ
+---------                       T-Var
+Γ ⊢ x : T
+
+The type assumed for x in Γ is T.
+
+Γ ⊢ t₁ : T₁₁ → T₁₂      Γ ⊢ t₂ : T₁₁
+------------------------------------    T-App
+          Γ ⊢ t₁ t₂ : T₁₂
+```
+
+```
+U+22A2 = ⊢
+U+2209 = ∉
+
+U+21A6 = ↦
+U+2218 = ∘
+U+00B7 = ·
+
+U+1D62 = ᵢ
+U+2C7C = ⱼ
+U+2096 = ₖ
+U+2099 = ₙ
+
+U+2081 = ₁
+U+2082 = ₂
+
+U+00B9 = ¹
+U+00B2 = ²
+U+00B3 = ³
+
+U+2070 = ⁰
+U+2071 = ⁱ (superscript i)
+
+<C-k>1' = ′ (prime)
+<C-k>l* = λ
+<C-k>(- = ∈
+<C-k>G* = Γ
+<C-k>/0 = ∅
+<C-k>s* = σ
+<C-k>1s = ₁
+<C-k>1S = ¹
 ```

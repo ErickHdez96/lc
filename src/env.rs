@@ -112,6 +112,10 @@ impl<'a> Env<'a> {
         self.names.push(k);
     }
 
+    pub fn get_immediate(&self, k: impl Into<Symbol>) -> Option<usize> {
+        self.context.get(&k.into()).copied()
+    }
+
     /// Get the de Bruijn index of the term pointed to by `name`.
     ///
     /// The index is calculated by the depth of the search + the original db_idx.

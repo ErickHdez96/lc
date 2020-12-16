@@ -1,7 +1,4 @@
-use crate::{
-    lexer::{tokenize, Token, TokenKind},
-    Symbol, T,
-};
+use crate::{Symbol, T, lexer::{tokenize, Token, TokenKind}, term::Pattern};
 use crate::{
     term::{LTerm, Term, TermKind},
     Error, ErrorKind, TY,
@@ -165,15 +162,14 @@ impl<'a> Parser<'a> {
             TokenKind::Let => {
                 let span = self.current_span();
                 self.bump();
-                let (x, _) = self.eat_ident(true)?;
+                let p = self.parse_pattern()?;
                 self.eat(TokenKind::Assign)?;
                 let t1 = self.parse_application_or_var(&env)?;
                 self.eat(TokenKind::In)?;
-                let mut env = Env::with_parent(&env);
-                env.insert_let_variable(x);
+                let env = resolve_match(&p, &env)?;
                 let t2 = self.parse_application_or_var(&env)?;
                 let span = span.with_hi(t2.span.hi);
-                Ok(T![let x, t1, t2; span])
+                Ok(T![let p, t1, t2; span])
             }
             TokenKind::LBrace => {
                 let span = self.current_span();
@@ -247,6 +243,44 @@ impl<'a> Parser<'a> {
                 )
             }
             None => Ok(t1),
+        }
+    }
+
+    fn parse_pattern(&mut self) -> Result<Box<Pattern>> {
+        match self.current() {
+            TokenKind::Ident => {
+                let x = self.next().text;
+                Ok(Box::new(Pattern::Var(x.into())))
+            }
+            TokenKind::LBrace => {
+                self.next();
+                let mut keys = vec![];
+                let mut patterns = HashMap::new();
+                while self.current() != TokenKind::Eof && self.current() != TokenKind::RBrace {
+                    let (key, span) = if self.nth(1) == TokenKind::Assign {
+                        let p = self.eat_ident(false)?;
+                        self.eat(TokenKind::Assign)?;
+                        p
+                    } else {
+                        (Symbol::from((keys.len() + 1).to_string()), self.current_span())
+                    };
+                    if patterns.get(&key).is_some() {
+                        return Err(error!("Key already matched against: `{}`", key; span));
+                    }
+                    let p = self.parse_pattern()?;
+                    keys.push(key);
+                    patterns.insert(key, p);
+                    if self.current() != TokenKind::RBrace {
+                        self.eat(TokenKind::Comma)?;
+                    }
+                }
+                self.eat(TokenKind::RBrace)?;
+                Ok(Box::new(Pattern::Record(patterns, keys)))
+            }
+            _ => {
+                let t = self.next();
+                Err(error!("Expected an identifier or `{{`, got `{}`", t; t.span))
+            }
         }
     }
 
@@ -433,6 +467,27 @@ impl<'a> Parser<'a> {
     }
 }
 
+fn resolve_match<'a>(p: &Pattern, env: &'a Env) -> Result<Env<'a>> {
+    let mut env = Env::with_parent(&env);
+    inner_resolve_match(p, &mut env)?;
+    return Ok(env);
+
+    fn inner_resolve_match(p: &Pattern, mut env: &mut Env) -> Result<()> {
+        match p {
+            Pattern::Var(x) => {
+                env.insert_let_variable(*x);
+                Ok(())
+            }
+            Pattern::Record(recs, keys) => {
+                for key in keys {
+                    inner_resolve_match(recs.get(&key).unwrap(), &mut env)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Regression tests
 /// Run them normally with `cargo test`
 ///
@@ -456,7 +511,7 @@ mod tests {
     fn check_stringify(input: &str, expected: expect_test::Expect) {
         expected.assert_eq(
             &term_to_string(
-                &parse(dbg!(input), &Env::new()).expect("Couldn't parse"),
+                &parse(input, &Env::new()).expect("Couldn't parse"),
                 &Env::new(),
             )
             .expect("Couldn't stringify"),
@@ -754,27 +809,31 @@ mod tests {
     fn test_parse_let_bindings() {
         check(
             "let x = true in x",
-            expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 17 }, kind: Let(Symbol("x"), Term { span: Span { lo: 8, hi: 12 }, kind: True }, Term { span: Span { lo: 16, hi: 17 }, kind: Variable(0) }) })"#
-            ]],
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 17 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 12 }, kind: True }, Term { span: Span { lo: 16, hi: 17 }, kind: Variable(0) }) })"#]],
         );
         check(
             "let not = λb:Bool.if b then false else true in not true",
-            expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 56 }, kind: Let(Symbol("not"), Term { span: Span { lo: 10, hi: 44 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, Term { span: Span { lo: 19, hi: 44 }, kind: If(Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) }, Term { span: Span { lo: 29, hi: 34 }, kind: False }, Term { span: Span { lo: 40, hi: 44 }, kind: True }) }) }, Term { span: Span { lo: 48, hi: 56 }, kind: Application(Term { span: Span { lo: 48, hi: 51 }, kind: Variable(0) }, Term { span: Span { lo: 52, hi: 56 }, kind: True }) }) })"#
-            ]],
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 56 }, kind: Let(Var(Symbol("not")), Term { span: Span { lo: 10, hi: 44 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, Term { span: Span { lo: 19, hi: 44 }, kind: If(Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) }, Term { span: Span { lo: 29, hi: 34 }, kind: False }, Term { span: Span { lo: 40, hi: 44 }, kind: True }) }) }, Term { span: Span { lo: 48, hi: 56 }, kind: Application(Term { span: Span { lo: 48, hi: 51 }, kind: Variable(0) }, Term { span: Span { lo: 52, hi: 56 }, kind: True }) }) })"#]],
         );
         check(
             "let x = let y = false in y in x",
-            expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 31 }, kind: Let(Symbol("x"), Term { span: Span { lo: 8, hi: 26 }, kind: Let(Symbol("y"), Term { span: Span { lo: 16, hi: 21 }, kind: False }, Term { span: Span { lo: 25, hi: 26 }, kind: Variable(0) }) }, Term { span: Span { lo: 30, hi: 31 }, kind: Variable(0) }) })"#
-            ]],
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 31 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 26 }, kind: Let(Var(Symbol("y")), Term { span: Span { lo: 16, hi: 21 }, kind: False }, Term { span: Span { lo: 25, hi: 26 }, kind: Variable(0) }) }, Term { span: Span { lo: 30, hi: 31 }, kind: Variable(0) }) })"#]],
+        );
+
+        check(
+            "let {x} = {1} in x",
+            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 18 }, kind: Let(Record({Symbol("1"): Var(Symbol("x"))}, [Symbol("1")]), Term { span: Span { lo: 10, hi: 13 }, kind: Record({Symbol("1"): Term { span: Span { lo: 11, hi: 12 }, kind: Succ(Term { span: Span { lo: 11, hi: 12 }, kind: Zero }) }}, [Symbol("1")]) }, Term { span: Span { lo: 17, hi: 18 }, kind: Variable(0) }) })"#]],
+        );
+        check_stringify(
+            "let {f=f, l=l} = {f=1, l=0} in f",
+            expect![[r#"let {f=f, l=l} = {f=succ 0, l=0} in f"#]],
         );
     }
 
     #[test]
     fn error_parse_let_bindings() {
         check_error("let x = x in x", "Variable `x` not bound");
+        check_error("let {x=x, x=y} = {x=true} in x", "Key already matched against: `x`");
     }
 
     #[test]

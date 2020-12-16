@@ -70,7 +70,7 @@ use crate::T;
 ///
 /// Here call by value is used.
 use crate::{env::Env, types::type_of};
-use std::rc::Rc;
+use std::{fmt, rc::Rc};
 use std::{collections::HashMap, convert::TryFrom};
 
 type Result<T> = std::result::Result<T, Error>;
@@ -112,7 +112,7 @@ impl PartialEq for Term {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum TermKind {
     /// x
     Variable(/** de Bruijn index */ usize),
@@ -129,12 +129,20 @@ pub enum TermKind {
     IsZero(LTerm),
     Unit,
     Ascription(LTerm, LTy),
-    Let(Symbol, LTerm, LTerm),
+    Let(Box<Pattern>, LTerm, LTerm),
     Record(HashMap<Symbol, LTerm>, /** Original order of the keys */ Vec<Symbol>),
     Projection(LTerm, Symbol),
 }
 
 pub type LTerm = Rc<Term>;
+
+// TODO: Improve clones, probably with Rc
+// TODO: Save spans for better errors
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pattern {
+    Var(Symbol),
+    Record(HashMap<Symbol, Box<Pattern>>, Vec<Symbol>),
+}
 
 pub fn eval(t: &LTerm, env: &Env) -> Result<LTerm> {
     type_of(&t, &env)?;
@@ -221,11 +229,9 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
         }
         // Type checking is done by type_of
         TermKind::Ascription(ref t, _) => eval_(t, env),
-        TermKind::Let(x, ref t1, ref t2) => {
+        TermKind::Let(ref p, ref t1, ref t2) => {
             let t1 = eval_(t1, &env)?;
-            let mut env = Env::with_parent(&env);
-            env.insert_let_term(x, t1.clone());
-            eval_(&term_subst_top(&t1, &t2)?, &env)
+            eval_(&term_subst_top_pattern(&t1, p, t2)?, &env)
         }
         TermKind::Record(ref elems, ref keys) => keys
             .iter()
@@ -251,6 +257,104 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
                     None => Err(error!("Couldn't get element `{}` from record", i; eval_t.span)),
                 },
                 _ => Err(error!("Projections can only be done over records"; eval_t.span)),
+            }
+        }
+    }
+}
+
+/// We iterate over the pattern substituting from left to right.
+///
+/// ```text
+/// let x = true in (x db:0)
+/// > [x → true](x db:0)
+/// > true
+///
+/// let {x, y} = {true, false} in {(x db:0), (y db:1)}
+/// > [x → true]{(x db:0), (y db:1)}
+/// > [y → false]{true, (y db:0)}
+/// > {true, false}
+///
+/// let {{x, y}, {z, a}} = {{true, false}, {0, unit}} in {{(a db:3), (z db:2)}, {(y db:1), (x db:0)}}
+/// > [x → true]{{(a db:3), (z db:2)}, {(y db:1), (x db:0)}}
+/// > [y → false]{{(a db:3), (z db:2)}, {(y db:1), true}}
+/// > [z → 0]{{(a db:3), (z db:2)}, {false, true}}
+/// > [a → unit]{{(a db:3), 0}, {false, true}}
+/// > {{unit, 0}, {false, true}}
+/// ```
+fn term_subst_top_pattern(v2: &LTerm, p: &Pattern, t12: &LTerm) -> Result<LTerm> {
+    match p {
+        Pattern::Var(_) => {
+            // Once we reach a variable, we know it is the leftmost one.
+            // Since `let x = t1 in t2` is similar to (λx.t2)t1
+            // We know that any reference to `x` has the de Bruijn index 0.
+            // So we substitute the current variable with the current term.
+            shift(&substitute(t12, 0, &shift(&v2, 1)?)?, -1)
+        }
+        Pattern::Record(recs, keys) => match v2.as_ref().kind {
+            // If we find a record, we iterate over the keys from left to right,
+            // in the order they were introduced to the environment.
+            // The leftmost variable we can find will always have de Bruijn index 0.
+            //
+            // Record patterns are only allowed to match over records `let {x} = true in x` is
+            // nonsensical.
+            TermKind::Record(ref trecs, _) => {
+                let mut t12 = Rc::clone(t12);
+
+                for key in keys {
+                    // We get the term pointed to by the current key and recursively call the
+                    // substitution function, this allows us to match deeply nested record
+                    // patterns.
+                    //
+                    // Note: for tuples (i.e. `{x, y}`), the keys we iterate over are the indices
+                    // of their members (beginning at 1). The keys for the previous tuple would be
+                    // [1, 2]. Then we would pattern match against to variables, `x`, and `y`.
+                    match trecs.get(key) {
+                        Some(v2) => {
+                            t12 = term_subst_top_pattern(v2, recs.get(key).unwrap(), &t12)?;
+                        }
+                        None => {
+                            return Err(error!("The key `{}` does not exist in the record", key; t12.span));
+                        }
+                    }
+                }
+
+                Ok(t12)
+            }
+            _ => Err(error!("Only records can be pattern matched"; t12.span)),
+        }
+    }
+}
+
+fn resolve_match<'a>(p: &Pattern, t: &LTerm, env: &'a Env) -> Result<Env<'a>> {
+    let mut env = Env::with_parent(&env);
+    inner_resolve_match(p, t, &mut env)?;
+    return Ok(env);
+
+    fn inner_resolve_match(p: &Pattern, t: &LTerm, mut env: &mut Env) -> Result<()> {
+        match p {
+            Pattern::Var(s) => {
+                env.insert_let_term(*s, Rc::clone(t));
+                Ok(())
+            }
+            Pattern::Record(recs, keys) => match t.as_ref().kind {
+                TermKind::Record(ref trecs, ref tkeys) => {
+                    for (i, key) in keys.iter().copied().enumerate() {
+                        // The keys must be in the same order
+                        match tkeys.get(i).copied() {
+                            Some(k) if k == key => {
+                                inner_resolve_match(recs.get(&key).unwrap(), trecs.get(&key).unwrap(), &mut env)?;
+                            }
+                            Some(_) => {
+                                return Err(error!("Match keys must follow the same order as the record"; t.span));
+                            }
+                            None => {
+                                return Err(error!("The key `{}` does not exist in the record", key; t.span));
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                _ => Err(error!("Only records can be pattern matched"; t.span)),
             }
         }
     }
@@ -343,8 +447,8 @@ where
                         span: t.span,
                     })
                 }),
-            TermKind::Let(x, ref t1, ref t2) => {
-                Ok(T![let x, map(t1, cutoff, on_var)?, map(t2, cutoff + 1, on_var)?; t.span])
+            TermKind::Let(ref p, ref t1, ref t2) => {
+                Ok(T![let p.clone(), map(t1, cutoff, on_var)?, map(t2, cutoff + 1, on_var)?; t.span])
             }
             TermKind::If(ref cond, ref then, ref else_b) => Ok(T![if
                                                map(cond, cutoff, on_var)?,
@@ -358,14 +462,6 @@ where
 }
 
 pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
-    fn symbol_to_record_key(s: Symbol) -> String {
-        if s.as_str().parse::<u64>().is_ok() {
-            String::new()
-        } else {
-            format!("{}=", s)
-        }
-    }
-
     match t.as_ref().kind {
         TermKind::Variable(idx) => match env.get_name_from_db_index(idx) {
             Some(v) => Ok(v.to_string()),
@@ -404,12 +500,15 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
             term_to_string(t, &env)?,
             term_to_string(e, &env)?,
         )),
-        TermKind::Let(x, ref t1, ref t2) => Ok(format!(
-            "let {} = {} in {}",
-            x,
-            term_to_string(t1, &env)?,
-            term_to_string(t2, &env)?,
-        )),
+        TermKind::Let(ref p, ref t1, ref t2) => {
+            let env = resolve_match(p, t1, &env)?;
+            Ok(format!(
+                "let {} = {} in {}",
+                p,
+                term_to_string(t1, &env)?,
+                term_to_string(t2, &env)?,
+            ))
+        },
         TermKind::Record(ref elems, ref keys) => {
             Ok(format!(
                 "{{{}}}",
@@ -438,6 +537,29 @@ fn new_name<'a>(s: impl Into<Symbol>, ty: &LTy, env: &'a Env) -> (Symbol, Env<'a
     let mut new_env = Env::with_parent(&env);
     new_env.insert_local(current_symbol, ty.clone());
     (current_symbol, new_env)
+}
+
+fn symbol_to_record_key(s: Symbol) -> String {
+    if s.as_str().parse::<u64>().is_ok() {
+        String::new()
+    } else {
+        format!("{}=", s)
+    }
+}
+
+impl fmt::Display for Pattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Pattern::Var(x) => x.fmt(f),
+            Pattern::Record(rec, vars) => write!(f, "{{{}}}", vars
+                .iter()
+                .copied()
+                .map(|k| format!("{}{}", symbol_to_record_key(k), rec.get(&k).unwrap()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            ),
+        }
+    }
 }
 
 #[macro_export]
@@ -739,6 +861,16 @@ mod tests {
                          in nand false false"#,
             expect![[r#"true"#]],
         );
+
+        // Pattern matching works!
+        check("let {x} = {true} in x", expect![[r#"true"#]]);
+        check("let {f=f, l=l} = {f=0, l=true} in succ f", expect![[r#"succ 0"#]]);
+        check("let {f=f, l=l} = {f={0, true}, l={unit}} in f", expect![[r#"{0, true}"#]]);
+        check("let {f=f, l=l} = {f={0, true}, l={unit}} in l", expect![[r#"{unit}"#]]);
+        check("let {f={x, y}, l=l} = {f={0, true}, l={unit}} in x", expect![[r#"0"#]]);
+        check("let {f={x, y}, l=l} = {f={0, true}, l={unit}} in y", expect![[r#"true"#]]);
+        check("let {{x, y}, {z, a}} = {{true, false}, {0, unit}} in {{a, z}, {y, x}}", expect![[r#"{{unit, 0}, {false, true}}"#]]);
+        check("let {x} = {true} in λ_:Bool.x", expect![[r#"λ_:Bool.true"#]]);
     }
 
     #[test]

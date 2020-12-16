@@ -1,4 +1,4 @@
-use crate::{Env, Error, ErrorKind, LTerm, Span, Symbol, TermKind, TY};
+use crate::{Env, Error, ErrorKind, LTerm, Span, Symbol, TY, TermKind, term::Pattern};
 use std::{collections::HashMap, fmt, rc::Rc};
 
 type Result<T> = std::result::Result<T, Error>;
@@ -156,10 +156,9 @@ pub fn type_of(type_t: &LTerm, env: &Env) -> Result<LTy> {
             }
             ty => Err(error!("Guard conditional expects a Bool, got `{}`", ty; cond.span)),
         },
-        TermKind::Let(x, ref t1, ref t2) => {
+        TermKind::Let(ref p, ref t1, ref t2) => {
             let t1 = type_of(t1, &env)?;
-            let mut env = Env::with_parent(&env);
-            env.insert_local(x, t1);
+            let env = resolve_match(p, &t1, &env, type_t.span)?;
             type_of(t2, &env)
         }
         TermKind::Record(ref elems, ref keys) => keys
@@ -184,6 +183,66 @@ pub fn type_of(type_t: &LTerm, env: &Env) -> Result<LTy> {
                     )),
                 },
                 _ => Err(error!("Only a record can be projected, got `{}`", record; record.span)),
+            }
+        }
+    }
+}
+
+fn resolve_match<'a>(p: &Pattern, t: &LTy, env: &'a Env, p_span: Span) -> Result<Env<'a>> {
+    let mut env = Env::with_parent(&env);
+    inner_resolve_match(p, t, &mut env, p_span)?;
+    return Ok(env);
+
+    fn inner_resolve_match(p: &Pattern, t: &LTy, mut env: &mut Env, p_span: Span) -> Result<()> {
+        match p {
+            Pattern::Var(s) => match env.get_immediate(*s) {
+                Some(_) => {
+                    Err(error!("Binding `{}` already used", s; p_span))
+                }
+                _ => {
+                    env.insert_local(*s, Rc::clone(t));
+                    Ok(())
+                }
+            }
+            Pattern::Record(recs, keys) => match t.as_ref().kind {
+                TyKind::Record(ref trecs, ref tkeys) => {
+                    if tkeys.len() > keys.len() {
+                        let mut span_iter = tkeys[keys.len()..]
+                            .iter()
+                            .map(|k| trecs.get(&k).unwrap().span);
+                        let start = span_iter.next().unwrap();
+                        let p_span = span_iter
+                            .fold(start, |acc, cur| acc.with_hi(cur.hi));
+                        // To probably do: Display missing tuple keys better
+                        return Err(error!(
+                            "The keys `{}` are not matched against",
+                            tkeys[keys.len()..]
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            p_span
+                        ));
+                    }
+
+                    for (i, key) in keys.iter().copied().enumerate() {
+                        // The keys must be in the same order
+                        match tkeys.get(i).copied() {
+                            Some(k) if k == key => {
+                                inner_resolve_match(recs.get(&key).unwrap(), trecs.get(&key).unwrap(), &mut env, p_span)?;
+                            }
+                            Some(_) if trecs.get(&key).is_some() => {
+                                return Err(error!("Match keys must follow the same order as the record"; p_span));
+                            }
+                            _ => {
+                                return Err(error!("The key `{}` does not exist in the record", key; p_span));
+                            }
+                        }
+                    }
+
+                    Ok(())
+                }
+                _ => Err(error!("Only records can be pattern matched"; p_span)),
             }
         }
     }
@@ -420,18 +479,54 @@ mod tests {
             "let not = λb:Bool.if b then false else true in not",
             expect![[r#"Bool → Bool"#]],
         );
+        check(
+            "let {x} = {0} in x",
+            expect![[r#"Nat"#]],
+        );
+        check(
+            "let {f=f, l=l} = {f=true,l=0} in {f=l, l=f}",
+            expect![[r#"{f:Nat, l:Bool}"#]],
+        );
     }
 
     #[test]
     fn error_typecheck_let_bindings() {
+        //check_parse_error(
+        //    "let x = true in succ x",
+        //    expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+        //);
+        //check_parse_error(
+        //    "let not = λb:Bool.if b then false else true in not 0",
+        //    expect![["TypeError: Expected type `Bool`, got `Nat`"]],
+        //);
+        //check_parse_error(
+        //    "let {x} = true in x",
+        //    expect![[r#"TypeError: Only records can be pattern matched"#]],
+        //);
+        //check_parse_error(
+        //    "let {x} = {0, true} in x",
+        //    expect![[r#"TypeError: The keys `2` are not matched against"#]],
+        //);
+        //check_parse_error(
+        //    "let {f=x} = {x=true} in x",
+        //    expect![[r#"TypeError: The key `f` does not exist in the record"#]],
+        //);
+        //check_parse_error(
+        //    "let {x} = {} in x",
+        //    expect![[r#"TypeError: The key `1` does not exist in the record"#]],
+        //);
         check_parse_error(
-            "let x = true in succ x",
-            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+            "let {x} = {0, 0, 0} in x",
+            expect![[r#"TypeError: The keys `2, 3` are not matched against"#]],
         );
-        check_parse_error(
-            "let not = λb:Bool.if b then false else true in not 0",
-            expect![["TypeError: Expected type `Bool`, got `Nat`"]],
-        );
+        //check_parse_error(
+        //    "let {x,x} = {0, 0} in x",
+        //    expect![[r#"TypeError: Binding `x` already used"#]],
+        //);
+        //check_parse_error(
+        //    "let {f=x,l=x} = {f=true, l=false} in x",
+        //    expect![[r#"TypeError: Binding `x` already used"#]],
+        //);
     }
 
     #[test]
