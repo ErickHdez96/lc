@@ -3,6 +3,7 @@ use crate::{
     Span,
 };
 use std::fmt;
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
@@ -53,11 +54,21 @@ impl fmt::Display for ErrorKind {
 pub fn print_error(error: &Error, _source: &str) {
     // Runtime and type errors have Span(0, 0) currently
     if error.span.hi - error.span.lo > 0 {
+        let actual_offset = UnicodeWidthStr::width(&_source[..error.span.lo as usize]);
+        let actual_width =
+            UnicodeWidthStr::width(&_source[error.span.lo as usize..error.span.hi as usize]);
+
+        let error_signal = if actual_width > 2 {
+            format!("^{}^", "⎺".repeat(actual_width - 2))
+        } else {
+            "^".repeat(std::cmp::max(actual_width, 1))
+        };
+
         eprintln!(
             "{}{}{}{}",
-            " ".repeat(error.span.lo as usize + 3),
+            " ".repeat(actual_offset + 3),
             Style::new().bold().color(Color::BrightRed),
-            "↑".repeat(error.span.hi as usize - error.span.lo as usize),
+            error_signal,
             Style::new(),
         );
     }

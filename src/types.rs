@@ -1,4 +1,4 @@
-use crate::{Env, Error, ErrorKind, LTerm, Span, Symbol, TY, TermKind, term::Pattern};
+use crate::{term::Pattern, Env, Error, ErrorKind, LTerm, Span, Symbol, TermKind, TY};
 use std::{collections::HashMap, fmt, rc::Rc};
 
 type Result<T> = std::result::Result<T, Error>;
@@ -39,7 +39,10 @@ pub enum TyKind {
     Unit,
     Base(Symbol),
     Abstraction(LTy, LTy),
-    Record(HashMap<Symbol, LTy>, /** Original order of the keys */ Vec<Symbol>),
+    Record(
+        HashMap<Symbol, LTy>,
+        /** Original order of the keys */ Vec<Symbol>,
+    ),
 }
 
 pub type LTy = Rc<Ty>;
@@ -89,7 +92,8 @@ impl fmt::Display for TyKind {
                 write!(
                     f,
                     "{{{}}}",
-                    keys.iter().cloned()
+                    keys.iter()
+                        .cloned()
                         .map(|k| format!("{}{}", symbol_to_record_key(k), elems.get(&k).unwrap()))
                         .collect::<Vec<_>>()
                         .join(", ")
@@ -196,14 +200,12 @@ fn resolve_match<'a>(p: &Pattern, t: &LTy, env: &'a Env, p_span: Span) -> Result
     fn inner_resolve_match(p: &Pattern, t: &LTy, mut env: &mut Env, p_span: Span) -> Result<()> {
         match p {
             Pattern::Var(s) => match env.get_immediate(*s) {
-                Some(_) => {
-                    Err(error!("Binding `{}` already used", s; p_span))
-                }
+                Some(_) => Err(error!("Binding `{}` already used", s; p_span)),
                 _ => {
                     env.insert_local(*s, Rc::clone(t));
                     Ok(())
                 }
-            }
+            },
             Pattern::Record(recs, keys) => match t.as_ref().kind {
                 TyKind::Record(ref trecs, ref tkeys) => {
                     if tkeys.len() > keys.len() {
@@ -211,8 +213,7 @@ fn resolve_match<'a>(p: &Pattern, t: &LTy, env: &'a Env, p_span: Span) -> Result
                             .iter()
                             .map(|k| trecs.get(&k).unwrap().span);
                         let start = span_iter.next().unwrap();
-                        let p_span = span_iter
-                            .fold(start, |acc, cur| acc.with_hi(cur.hi));
+                        let p_span = span_iter.fold(start, |acc, cur| acc.with_hi(cur.hi));
                         // To probably do: Display missing tuple keys better
                         return Err(error!(
                             "The keys `{}` are not matched against",
@@ -229,13 +230,22 @@ fn resolve_match<'a>(p: &Pattern, t: &LTy, env: &'a Env, p_span: Span) -> Result
                         // The keys must be in the same order
                         match tkeys.get(i).copied() {
                             Some(k) if k == key => {
-                                inner_resolve_match(recs.get(&key).unwrap(), trecs.get(&key).unwrap(), &mut env, p_span)?;
+                                inner_resolve_match(
+                                    recs.get(&key).unwrap(),
+                                    trecs.get(&key).unwrap(),
+                                    &mut env,
+                                    p_span,
+                                )?;
                             }
                             Some(_) if trecs.get(&key).is_some() => {
-                                return Err(error!("Match keys must follow the same order as the record"; p_span));
+                                return Err(
+                                    error!("Match keys must follow the same order as the record"; p_span),
+                                );
                             }
                             _ => {
-                                return Err(error!("The key `{}` does not exist in the record", key; p_span));
+                                return Err(
+                                    error!("The key `{}` does not exist in the record", key; p_span),
+                                );
                             }
                         }
                     }
@@ -243,7 +253,7 @@ fn resolve_match<'a>(p: &Pattern, t: &LTy, env: &'a Env, p_span: Span) -> Result
                     Ok(())
                 }
                 _ => Err(error!("Only records can be pattern matched"; p_span)),
-            }
+            },
         }
     }
 }
@@ -479,10 +489,7 @@ mod tests {
             "let not = λb:Bool.if b then false else true in not",
             expect![[r#"Bool → Bool"#]],
         );
-        check(
-            "let {x} = {0} in x",
-            expect![[r#"Nat"#]],
-        );
+        check("let {x} = {0} in x", expect![[r#"Nat"#]]);
         check(
             "let {f=f, l=l} = {f=true,l=0} in {f=l, l=f}",
             expect![[r#"{f:Nat, l:Bool}"#]],

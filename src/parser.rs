@@ -1,4 +1,8 @@
-use crate::{Symbol, T, lexer::{tokenize, Token, TokenKind}, term::Pattern};
+use crate::{
+    lexer::{tokenize, Token, TokenKind},
+    term::Pattern,
+    Symbol, T,
+};
 use crate::{
     term::{LTerm, Term, TermKind},
     Error, ErrorKind, TY,
@@ -262,7 +266,10 @@ impl<'a> Parser<'a> {
                         self.eat(TokenKind::Assign)?;
                         p
                     } else {
-                        (Symbol::from((keys.len() + 1).to_string()), self.current_span())
+                        (
+                            Symbol::from((keys.len() + 1).to_string()),
+                            self.current_span(),
+                        )
                     };
                     if patterns.get(&key).is_some() {
                         return Err(error!("Key already matched against: `{}`", key; span));
@@ -809,20 +816,28 @@ mod tests {
     fn test_parse_let_bindings() {
         check(
             "let x = true in x",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 17 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 12 }, kind: True }, Term { span: Span { lo: 16, hi: 17 }, kind: Variable(0) }) })"#]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 17 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 12 }, kind: True }, Term { span: Span { lo: 16, hi: 17 }, kind: Variable(0) }) })"#
+            ]],
         );
         check(
             "let not = λb:Bool.if b then false else true in not true",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 56 }, kind: Let(Var(Symbol("not")), Term { span: Span { lo: 10, hi: 44 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, Term { span: Span { lo: 19, hi: 44 }, kind: If(Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) }, Term { span: Span { lo: 29, hi: 34 }, kind: False }, Term { span: Span { lo: 40, hi: 44 }, kind: True }) }) }, Term { span: Span { lo: 48, hi: 56 }, kind: Application(Term { span: Span { lo: 48, hi: 51 }, kind: Variable(0) }, Term { span: Span { lo: 52, hi: 56 }, kind: True }) }) })"#]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 56 }, kind: Let(Var(Symbol("not")), Term { span: Span { lo: 10, hi: 44 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, Term { span: Span { lo: 19, hi: 44 }, kind: If(Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) }, Term { span: Span { lo: 29, hi: 34 }, kind: False }, Term { span: Span { lo: 40, hi: 44 }, kind: True }) }) }, Term { span: Span { lo: 48, hi: 56 }, kind: Application(Term { span: Span { lo: 48, hi: 51 }, kind: Variable(0) }, Term { span: Span { lo: 52, hi: 56 }, kind: True }) }) })"#
+            ]],
         );
         check(
             "let x = let y = false in y in x",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 31 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 26 }, kind: Let(Var(Symbol("y")), Term { span: Span { lo: 16, hi: 21 }, kind: False }, Term { span: Span { lo: 25, hi: 26 }, kind: Variable(0) }) }, Term { span: Span { lo: 30, hi: 31 }, kind: Variable(0) }) })"#]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 31 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 26 }, kind: Let(Var(Symbol("y")), Term { span: Span { lo: 16, hi: 21 }, kind: False }, Term { span: Span { lo: 25, hi: 26 }, kind: Variable(0) }) }, Term { span: Span { lo: 30, hi: 31 }, kind: Variable(0) }) })"#
+            ]],
         );
 
         check(
             "let {x} = {1} in x",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 18 }, kind: Let(Record({Symbol("1"): Var(Symbol("x"))}, [Symbol("1")]), Term { span: Span { lo: 10, hi: 13 }, kind: Record({Symbol("1"): Term { span: Span { lo: 11, hi: 12 }, kind: Succ(Term { span: Span { lo: 11, hi: 12 }, kind: Zero }) }}, [Symbol("1")]) }, Term { span: Span { lo: 17, hi: 18 }, kind: Variable(0) }) })"#]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 18 }, kind: Let(Record({Symbol("1"): Var(Symbol("x"))}, [Symbol("1")]), Term { span: Span { lo: 10, hi: 13 }, kind: Record({Symbol("1"): Term { span: Span { lo: 11, hi: 12 }, kind: Succ(Term { span: Span { lo: 11, hi: 12 }, kind: Zero }) }}, [Symbol("1")]) }, Term { span: Span { lo: 17, hi: 18 }, kind: Variable(0) }) })"#
+            ]],
         );
         check_stringify(
             "let {f=f, l=l} = {f=1, l=0} in f",
@@ -833,7 +848,10 @@ mod tests {
     #[test]
     fn error_parse_let_bindings() {
         check_error("let x = x in x", "Variable `x` not bound");
-        check_error("let {x=x, x=y} = {x=true} in x", "Key already matched against: `x`");
+        check_error(
+            "let {x=x, x=y} = {x=true} in x",
+            "Key already matched against: `x`",
+        );
     }
 
     #[test]
@@ -844,7 +862,9 @@ mod tests {
         );
         check(
             "{true}",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) })"#]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) })"#
+            ]],
         );
         check_stringify(
             "{λ_:Bool.true, λ_:Bool.false}",
@@ -862,7 +882,9 @@ mod tests {
         // We accept trailing commas
         check(
             "{0,}",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 4 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 2 }, kind: Zero }}, [Symbol("1")]) })"#]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 4 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 2 }, kind: Zero }}, [Symbol("1")]) })"#
+            ]],
         );
 
         check_stringify(
@@ -876,7 +898,9 @@ mod tests {
         );
         check(
             "λt:{}.t",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Abstraction(Symbol("t"), Ty { span: Span { lo: 4, hi: 6 }, kind: Record({}, []) }, Term { span: Span { lo: 7, hi: 8 }, kind: Variable(0) }) })"#]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Abstraction(Symbol("t"), Ty { span: Span { lo: 4, hi: 6 }, kind: Record({}, []) }, Term { span: Span { lo: 7, hi: 8 }, kind: Variable(0) }) })"#
+            ]],
         );
     }
 
@@ -895,12 +919,16 @@ mod tests {
     fn test_parse_record_projection() {
         check(
             "{true}.1",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) }, Symbol("1")) })"#]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) }, Symbol("1")) })"#
+            ]],
         );
         check_stringify("{} as {Bool, Bool}.1 as Bool", expect![[r#"{}.1"#]]);
         check(
             "{true}.1 as Bool",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 16 }, kind: Ascription(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) }, Symbol("1")) }, Ty { span: Span { lo: 12, hi: 16 }, kind: Bool }) })"#]],
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 16 }, kind: Ascription(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) }, Symbol("1")) }, Ty { span: Span { lo: 12, hi: 16 }, kind: Bool }) })"#
+            ]],
         );
         check_stringify(
             "{{true, unit}.1, 0}.2 as Nat",

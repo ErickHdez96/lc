@@ -70,8 +70,8 @@ use crate::T;
 ///
 /// Here call by value is used.
 use crate::{env::Env, types::type_of};
-use std::{fmt, rc::Rc};
 use std::{collections::HashMap, convert::TryFrom};
+use std::{fmt, rc::Rc};
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -130,7 +130,10 @@ pub enum TermKind {
     Unit,
     Ascription(LTerm, LTy),
     Let(Box<Pattern>, LTerm, LTerm),
-    Record(HashMap<Symbol, LTerm>, /** Original order of the keys */ Vec<Symbol>),
+    Record(
+        HashMap<Symbol, LTerm>,
+        /** Original order of the keys */ Vec<Symbol>,
+    ),
     Projection(LTerm, Symbol),
 }
 
@@ -313,7 +316,9 @@ fn term_subst_top_pattern(v2: &LTerm, p: &Pattern, t12: &LTerm) -> Result<LTerm>
                             t12 = term_subst_top_pattern(v2, recs.get(key).unwrap(), &t12)?;
                         }
                         None => {
-                            return Err(error!("The key `{}` does not exist in the record", key; t12.span));
+                            return Err(
+                                error!("The key `{}` does not exist in the record", key; t12.span),
+                            );
                         }
                     }
                 }
@@ -321,7 +326,7 @@ fn term_subst_top_pattern(v2: &LTerm, p: &Pattern, t12: &LTerm) -> Result<LTerm>
                 Ok(t12)
             }
             _ => Err(error!("Only records can be pattern matched"; t12.span)),
-        }
+        },
     }
 }
 
@@ -342,20 +347,28 @@ fn resolve_match<'a>(p: &Pattern, t: &LTerm, env: &'a Env) -> Result<Env<'a>> {
                         // The keys must be in the same order
                         match tkeys.get(i).copied() {
                             Some(k) if k == key => {
-                                inner_resolve_match(recs.get(&key).unwrap(), trecs.get(&key).unwrap(), &mut env)?;
+                                inner_resolve_match(
+                                    recs.get(&key).unwrap(),
+                                    trecs.get(&key).unwrap(),
+                                    &mut env,
+                                )?;
                             }
                             Some(_) => {
-                                return Err(error!("Match keys must follow the same order as the record"; t.span));
+                                return Err(
+                                    error!("Match keys must follow the same order as the record"; t.span),
+                                );
                             }
                             None => {
-                                return Err(error!("The key `{}` does not exist in the record", key; t.span));
+                                return Err(
+                                    error!("The key `{}` does not exist in the record", key; t.span),
+                                );
                             }
                         }
                     }
                     Ok(())
                 }
                 _ => Err(error!("Only records can be pattern matched"; t.span)),
-            }
+            },
         }
     }
 }
@@ -447,9 +460,9 @@ where
                         span: t.span,
                     })
                 }),
-            TermKind::Let(ref p, ref t1, ref t2) => {
-                Ok(T![let p.clone(), map(t1, cutoff, on_var)?, map(t2, cutoff + 1, on_var)?; t.span])
-            }
+            TermKind::Let(ref p, ref t1, ref t2) => Ok(
+                T![let p.clone(), map(t1, cutoff, on_var)?, map(t2, cutoff + 1, on_var)?; t.span],
+            ),
             TermKind::If(ref cond, ref then, ref else_b) => Ok(T![if
                                                map(cond, cutoff, on_var)?,
                                                map(then, cutoff, on_var)?,
@@ -508,23 +521,21 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
                 term_to_string(t1, &env)?,
                 term_to_string(t2, &env)?,
             ))
-        },
-        TermKind::Record(ref elems, ref keys) => {
-            Ok(format!(
-                "{{{}}}",
-                keys.iter()
-                    .cloned()
-                    .map(
-                        |k| term_to_string(elems.get(&k).unwrap(), &env).map(|e| format!(
-                            "{}{}",
-                            symbol_to_record_key(k),
-                            e
-                        ))
-                    )
-                    .collect::<Result<Vec<_>>>()?
-                    .join(", ")
-            ))
         }
+        TermKind::Record(ref elems, ref keys) => Ok(format!(
+            "{{{}}}",
+            keys.iter()
+                .cloned()
+                .map(
+                    |k| term_to_string(elems.get(&k).unwrap(), &env).map(|e| format!(
+                        "{}{}",
+                        symbol_to_record_key(k),
+                        e
+                    ))
+                )
+                .collect::<Result<Vec<_>>>()?
+                .join(", ")
+        )),
         TermKind::Projection(ref t, i) => Ok(format!("{}.{}", term_to_string(t, &env)?, i,)),
     }
 }
@@ -551,12 +562,14 @@ impl fmt::Display for Pattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Pattern::Var(x) => x.fmt(f),
-            Pattern::Record(rec, vars) => write!(f, "{{{}}}", vars
-                .iter()
-                .copied()
-                .map(|k| format!("{}{}", symbol_to_record_key(k), rec.get(&k).unwrap()))
-                .collect::<Vec<_>>()
-                .join(", "),
+            Pattern::Record(rec, vars) => write!(
+                f,
+                "{{{}}}",
+                vars.iter()
+                    .copied()
+                    .map(|k| format!("{}{}", symbol_to_record_key(k), rec.get(&k).unwrap()))
+                    .collect::<Vec<_>>()
+                    .join(", "),
             ),
         }
     }
@@ -864,13 +877,34 @@ mod tests {
 
         // Pattern matching works!
         check("let {x} = {true} in x", expect![[r#"true"#]]);
-        check("let {f=f, l=l} = {f=0, l=true} in succ f", expect![[r#"succ 0"#]]);
-        check("let {f=f, l=l} = {f={0, true}, l={unit}} in f", expect![[r#"{0, true}"#]]);
-        check("let {f=f, l=l} = {f={0, true}, l={unit}} in l", expect![[r#"{unit}"#]]);
-        check("let {f={x, y}, l=l} = {f={0, true}, l={unit}} in x", expect![[r#"0"#]]);
-        check("let {f={x, y}, l=l} = {f={0, true}, l={unit}} in y", expect![[r#"true"#]]);
-        check("let {{x, y}, {z, a}} = {{true, false}, {0, unit}} in {{a, z}, {y, x}}", expect![[r#"{{unit, 0}, {false, true}}"#]]);
-        check("let {x} = {true} in λ_:Bool.x", expect![[r#"λ_:Bool.true"#]]);
+        check(
+            "let {f=f, l=l} = {f=0, l=true} in succ f",
+            expect![[r#"succ 0"#]],
+        );
+        check(
+            "let {f=f, l=l} = {f={0, true}, l={unit}} in f",
+            expect![[r#"{0, true}"#]],
+        );
+        check(
+            "let {f=f, l=l} = {f={0, true}, l={unit}} in l",
+            expect![[r#"{unit}"#]],
+        );
+        check(
+            "let {f={x, y}, l=l} = {f={0, true}, l={unit}} in x",
+            expect![[r#"0"#]],
+        );
+        check(
+            "let {f={x, y}, l=l} = {f={0, true}, l={unit}} in y",
+            expect![[r#"true"#]],
+        );
+        check(
+            "let {{x, y}, {z, a}} = {{true, false}, {0, unit}} in {{a, z}, {y, x}}",
+            expect![[r#"{{unit, 0}, {false, true}}"#]],
+        );
+        check(
+            "let {x} = {true} in λ_:Bool.x",
+            expect![[r#"λ_:Bool.true"#]],
+        );
     }
 
     #[test]
