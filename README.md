@@ -19,6 +19,7 @@ Currently the supported types are:
 * Unit (unit)
 * Base type (Any name)
 * Abstractions (Type → Type)
+* Records ({label:Type}, {Type,Type})
 
 ## Integrated functions
 
@@ -69,7 +70,7 @@ false : Bool
 
 ## Conditionals
 
-`if Bool then T else T`
+`if t₁ then t₂ else t₃`
 
 ```
 >> if true then 0 else 2
@@ -80,6 +81,34 @@ succ 0 : Nat
 
 >> if and true true then succ 1 else 0
 succ succ 0 : Nat
+```
+
+## Let bindings
+
+`let x = t in t`
+
+```
+>> let x = true in x
+true : Bool
+
+>> let not = λb:Bool.if b then false else true in not true
+false : Bool
+```
+
+## Records (and Tuples)
+
+```
+>> {true}
+{true} : Bool
+
+>> {true}.1
+true : Bool
+
+>> { isvalid=true, invalid=false }.isvalid
+true : Bool
+
+>> { first=0, true}
+{first=0, true} : {first:Nat, Bool}
 ```
 
 ## Examples
