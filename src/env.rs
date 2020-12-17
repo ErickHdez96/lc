@@ -7,10 +7,32 @@ use std::default;
 
 type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum IdxKind {
+    Term,
+    Type,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct Idx {
+    idx: usize,
+    kind: IdxKind,
+}
+
+impl Idx {
+    fn new(idx: usize, kind: IdxKind) -> Self {
+        Self { idx, kind }
+    }
+
+    fn is_var(self) -> bool {
+        self.kind == IdxKind::Term
+    }
+}
+
 /// Terms are stored along with their calculated de Bruijn index
 #[derive(Debug)]
 pub struct Env<'a> {
-    context: HashMap<Symbol, usize>,
+    context: HashMap<Symbol, Idx>,
     vars: Vec<LTerm>,
     names: Vec<Symbol>,
     types: Vec<LTy>,
@@ -66,10 +88,9 @@ impl<'a> Env<'a> {
 
     pub fn get(&self, s: impl Into<Symbol>) -> Option<LTerm> {
         let s = s.into();
-        if let Some(&idx) = self.context.get(&s) {
-            self.vars.get(idx).cloned()
-        } else {
-            self.parent.and_then(|p| p.get(s))
+        match self.context.get(&s) {
+            Some(idx) if idx.is_var() => self.vars.get(idx.idx).cloned(),
+            _ => self.parent.and_then(|p| p.get(s)),
         }
     }
 
@@ -80,10 +101,27 @@ impl<'a> Env<'a> {
             .or_else(|| self.parent.and_then(|p| p.get_type(idx - self.types.len())))
     }
 
+    pub fn get_type_from_symbol(&self, s: impl Into<Symbol>) -> Option<LTy> {
+        let s = s.into();
+        self.context
+            .get(&s)
+            .and_then(|i| self.types.get(i.idx))
+            .cloned()
+            .or_else(|| self.parent.and_then(|p| p.get_type_from_symbol(s)))
+    }
+
     pub fn insert_local(&mut self, k: impl Into<Symbol>, ty: LTy) {
         let db_idx = self.context.len();
         let k = k.into();
-        self.context.insert(k, db_idx);
+        self.context.insert(k, Idx::new(db_idx, IdxKind::Term));
+        self.names.push(k);
+        self.types.push(ty);
+    }
+
+    pub fn insert_type(&mut self, k: impl Into<Symbol>, ty: LTy) {
+        let db_idx = self.context.len();
+        let k = k.into();
+        self.context.insert(k, Idx::new(db_idx, IdxKind::Type));
         self.names.push(k);
         self.types.push(ty);
     }
@@ -91,7 +129,7 @@ impl<'a> Env<'a> {
     pub fn insert_let_term(&mut self, k: impl Into<Symbol>, t: LTerm) {
         let k = k.into();
         let db_idx = self.vars.len();
-        self.context.insert(k, db_idx);
+        self.context.insert(k, Idx::new(db_idx, IdxKind::Term));
         self.vars.push(t);
         self.names.push(k);
     }
@@ -99,7 +137,7 @@ impl<'a> Env<'a> {
     pub fn insert_variable(&mut self, k: impl Into<Symbol>, t: LTerm, ty: LTy) {
         let k = k.into();
         let db_idx = self.vars.len();
-        self.context.insert(k, db_idx);
+        self.context.insert(k, Idx::new(db_idx, IdxKind::Term));
         self.vars.push(t);
         self.names.push(k);
         self.types.push(ty);
@@ -108,12 +146,12 @@ impl<'a> Env<'a> {
     pub fn insert_let_variable(&mut self, k: impl Into<Symbol>) {
         let db_idx = self.context.len();
         let k = k.into();
-        self.context.insert(k, db_idx);
+        self.context.insert(k, Idx::new(db_idx, IdxKind::Term));
         self.names.push(k);
     }
 
     pub fn get_immediate(&self, k: impl Into<Symbol>) -> Option<usize> {
-        self.context.get(&k.into()).copied()
+        self.context.get(&k.into()).copied().map(|i| i.idx)
     }
 
     /// Get the de Bruijn index of the term pointed to by `name`.
@@ -126,7 +164,8 @@ impl<'a> Env<'a> {
     fn get_db_index_(&self, name: Symbol, rec_level: usize) -> Option<usize> {
         self.context
             .get(&name)
-            .map(|idx| idx + rec_level)
+            .filter(|i| i.is_var())
+            .map(|idx| idx.idx + rec_level)
             .or_else(|| {
                 self.parent
                     .and_then(|p| p.get_db_index_(name, rec_level + self.context.len()))
@@ -152,7 +191,7 @@ fn base_env_() -> Result<Env<'static>> {
     macro_rules! p {
         ($name:expr, $input:expr, $env:expr) => {
             let t = parse($input, &$env)?;
-            let ty = type_of(&t, &$env)?;
+            let ty = type_of(&t, &mut $env)?;
             $env.insert_variable($name, t, ty);
         };
     }
@@ -192,11 +231,13 @@ mod tests {
         assert_eq!(env.get("id"), None);
 
         let id = parse("λx:Bool.x", &env)?;
-        env.insert_variable("id", id.clone(), type_of(&id, &env)?);
+        let id_ty = type_of(&id, &mut env)?;
+        env.insert_variable("id", id.clone(), id_ty);
         assert_eq!(env.get("id"), Some(id.clone()));
 
         let tru = parse("λt:Bool.λf:Bool.t", &env)?;
-        env.insert_variable("true", tru.clone(), type_of(&tru, &env)?);
+        let tru_ty = type_of(&tru, &mut env)?;
+        env.insert_variable("true", tru.clone(), tru_ty);
         assert_eq!(env.get("true"), Some(tru.clone()));
         assert_eq!(env.get("id"), Some(id.clone()));
 

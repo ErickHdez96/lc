@@ -71,6 +71,9 @@ pub enum TokenKind {
     #[token("in")]
     In,
 
+    #[token("type")]
+    Type,
+
     #[regex("[0-9]+")]
     Number,
 
@@ -94,6 +97,9 @@ pub enum TokenKind {
 
     #[token("}")]
     RBrace,
+
+    #[token(";")]
+    Semicolon,
 
     #[token(":")]
     Colon,
@@ -130,6 +136,7 @@ impl TokenKind {
                 | TokenKind::Unit
                 | TokenKind::Let
                 | TokenKind::LBrace
+                | TokenKind::Type
         )
     }
 
@@ -172,6 +179,7 @@ impl std::fmt::Display for TokenKind {
                 RParen => ")",
                 LBrace => "{",
                 RBrace => "}",
+                Semicolon => ";",
                 Colon => ":",
                 Arrow => "→",
                 Assign => "=",
@@ -182,6 +190,7 @@ impl std::fmt::Display for TokenKind {
                 As => "as",
                 Let => "let",
                 In => "in",
+                Type => "type",
                 IsZero => "iszero",
                 Number => "<number>",
                 Error => "<unknown char>",
@@ -244,12 +253,14 @@ mod tests {
         check("as", vec![As]);
         check("let", vec![Let]);
         check("in", vec![In]);
+        check("type", vec![Type]);
         check(".", vec![Period]);
         check(",", vec![Comma]);
         check("(", vec![LParen]);
         check(")", vec![RParen]);
         check("{", vec![LBrace]);
         check("}", vec![RBrace]);
+        check(";", vec![Semicolon]);
         check(":", vec![Colon]);
         check("=", vec![Assign]);
         check(

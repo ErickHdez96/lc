@@ -9,7 +9,7 @@ pub fn run_repl() {
     let mut rl = init_rustyline();
     println!("Hello! Welcome to the lambda calculus evaluator");
 
-    let env = base_env();
+    let mut env = base_env();
 
     loop {
         let input = rl.readline(">> ");
@@ -25,8 +25,8 @@ pub fn run_repl() {
                 line => {
                     rl.add_history_entry(line);
                     match parse(line, &env)
-                        .and_then(|p| eval(&p, &env))
-                        .and_then(|p| Ok((term_to_string(&p, &env)?, type_of(&p, &env)?)))
+                        .and_then(|p| eval(&p, &mut env))
+                        .and_then(|p| Ok((term_to_string(&p, &env)?, type_of(&p, &mut env)?)))
                     {
                         Ok((term, ty)) => println!("{} : {}", term, ty),
                         Err(e) => print_error(&e, line),

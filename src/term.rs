@@ -135,6 +135,8 @@ pub enum TermKind {
         /** Original order of the keys */ Vec<Symbol>,
     ),
     Projection(LTerm, Symbol),
+    VariableDefinition(Box<Pattern>, LTerm),
+    TypeDefinition(Symbol, LTy),
 }
 
 pub type LTerm = Rc<Term>;
@@ -147,13 +149,13 @@ pub enum Pattern {
     Record(HashMap<Symbol, Box<Pattern>>, Vec<Symbol>),
 }
 
-pub fn eval(t: &LTerm, env: &Env) -> Result<LTerm> {
-    type_of(&t, &env)?;
+pub fn eval(t: &LTerm, env: &mut Env) -> Result<LTerm> {
+    type_of(&t, env)?;
     eval_(&t, env)
 }
 
 // See NOTES.md for the evaluation rules
-fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
+fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
     match eval_t.as_ref().kind {
         TermKind::Application(ref t1, ref t2) => {
             //    t1 → t1'
@@ -172,7 +174,7 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
             match v1.as_ref().kind {
                 // E-AppAbs
                 // (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)
-                TermKind::Abstraction(_, _, ref body) => eval_(&term_subst_top(&v2, &body)?, &env),
+                TermKind::Abstraction(_, _, ref body) => eval_(&term_subst_top(&v2, &body)?, env),
                 _ => Err(error!(
                     "Expected an abstraction, got {}",
                     term_to_string(t1, &env)?;
@@ -185,11 +187,11 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
             .ok_or_else(|| error!("Invalid de Bruijn index: {}", idx; eval_t.span)),
         // Evaluating an abstraction, yields the abstraction itself.
         TermKind::If(ref cond, ref then, ref else_b) => {
-            let cond = eval_(cond, &env)?;
+            let cond = eval_(cond, env)?;
 
             match cond.as_ref().kind {
-                TermKind::True => eval_(then, &env),
-                TermKind::False => eval_(else_b, &env),
+                TermKind::True => eval_(then, env),
+                TermKind::False => eval_(else_b, env),
                 _ => Err(error!(
                     "Expected a boolean, got `{}`",
                     term_to_string(&cond, &env)?;
@@ -203,11 +205,11 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
         | TermKind::Zero
         | TermKind::Unit => Ok(eval_t.clone()),
         TermKind::Succ(ref t) => {
-            let t = eval_(t, &env)?;
+            let t = eval_(t, env)?;
             Ok(T![succ t; eval_t.span])
         }
         TermKind::Pred(ref t) => {
-            let t = eval_(t, &env)?;
+            let t = eval_(t, env)?;
             match t.as_ref().kind {
                 TermKind::Zero => Ok(T![0; eval_t.span]),
                 TermKind::Succ(ref t) => Ok(t.clone()),
@@ -219,7 +221,7 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
             }
         }
         TermKind::IsZero(ref t) => {
-            let t = eval_(t, &env)?;
+            let t = eval_(t, env)?;
             match t.as_ref().kind {
                 TermKind::Zero => Ok(T![true; eval_t.span]),
                 TermKind::Succ(_) => Ok(T![false; eval_t.span]),
@@ -233,13 +235,13 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
         // Type checking is done by type_of
         TermKind::Ascription(ref t, _) => eval_(t, env),
         TermKind::Let(ref p, ref t1, ref t2) => {
-            let t1 = eval_(t1, &env)?;
-            eval_(&term_subst_top_pattern(&t1, p, t2)?, &env)
+            let t1 = eval_(t1, env)?;
+            eval_(&term_subst_top_pattern(&t1, p, t2)?, env)
         }
         TermKind::Record(ref elems, ref keys) => keys
             .iter()
             .cloned()
-            .map(|k| eval_(elems.get(&k).unwrap(), &env).map(|e| (k, e)))
+            .map(|k| eval_(elems.get(&k).unwrap(), env).map(|e| (k, e)))
             .collect::<Result<HashMap<_, _>>>()
             .map(|elems| {
                 Rc::new(Term {
@@ -248,7 +250,7 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
                 })
             }),
         TermKind::Projection(ref t, i) => {
-            let t = eval_(t, &env)?;
+            let t = eval_(t, env)?;
             if i.as_str() == "0" {
                 return Err(error!(
                     "Cannot access a record with `0`, projections start from `1`"; eval_t.span
@@ -262,6 +264,12 @@ fn eval_(eval_t: &LTerm, env: &Env) -> Result<LTerm> {
                 _ => Err(error!("Projections can only be done over records"; eval_t.span)),
             }
         }
+        TermKind::VariableDefinition(ref p, ref t) => {
+            let t = eval_(t, env)?;
+            resolve_match_mut(p, &t, env)?;
+            Ok(T![unit; eval_t.span])
+        }
+        TermKind::TypeDefinition(_, _) => Ok(T![unit; eval_t.span]),
     }
 }
 
@@ -332,44 +340,44 @@ fn term_subst_top_pattern(v2: &LTerm, p: &Pattern, t12: &LTerm) -> Result<LTerm>
 
 fn resolve_match<'a>(p: &Pattern, t: &LTerm, env: &'a Env) -> Result<Env<'a>> {
     let mut env = Env::with_parent(&env);
-    inner_resolve_match(p, t, &mut env)?;
-    return Ok(env);
+    resolve_match_mut(p, t, &mut env)?;
+    Ok(env)
+}
 
-    fn inner_resolve_match(p: &Pattern, t: &LTerm, mut env: &mut Env) -> Result<()> {
-        match p {
-            Pattern::Var(s) => {
-                env.insert_let_term(*s, Rc::clone(t));
-                Ok(())
-            }
-            Pattern::Record(recs, keys) => match t.as_ref().kind {
-                TermKind::Record(ref trecs, ref tkeys) => {
-                    for (i, key) in keys.iter().copied().enumerate() {
-                        // The keys must be in the same order
-                        match tkeys.get(i).copied() {
-                            Some(k) if k == key => {
-                                inner_resolve_match(
-                                    recs.get(&key).unwrap(),
-                                    trecs.get(&key).unwrap(),
-                                    &mut env,
-                                )?;
-                            }
-                            Some(_) => {
-                                return Err(
-                                    error!("Match keys must follow the same order as the record"; t.span),
-                                );
-                            }
-                            None => {
-                                return Err(
-                                    error!("The key `{}` does not exist in the record", key; t.span),
-                                );
-                            }
+fn resolve_match_mut(p: &Pattern, t: &LTerm, mut env: &mut Env) -> Result<()> {
+    match p {
+        Pattern::Var(s) => {
+            env.insert_let_term(*s, Rc::clone(t));
+            Ok(())
+        }
+        Pattern::Record(recs, keys) => match t.as_ref().kind {
+            TermKind::Record(ref trecs, ref tkeys) => {
+                for (i, key) in keys.iter().copied().enumerate() {
+                    // The keys must be in the same order
+                    match tkeys.get(i).copied() {
+                        Some(k) if k == key => {
+                            resolve_match_mut(
+                                recs.get(&key).unwrap(),
+                                trecs.get(&key).unwrap(),
+                                &mut env,
+                            )?;
+                        }
+                        Some(_) => {
+                            return Err(
+                                error!("Match keys must follow the same order as the record"; t.span),
+                            );
+                        }
+                        None => {
+                            return Err(
+                                error!("The key `{}` does not exist in the record", key; t.span),
+                            );
                         }
                     }
-                    Ok(())
                 }
-                _ => Err(error!("Only records can be pattern matched"; t.span)),
-            },
-        }
+                Ok(())
+            }
+            _ => Err(error!("Only records can be pattern matched"; t.span)),
+        },
     }
 }
 
@@ -469,6 +477,12 @@ where
                                                map(else_b, cutoff, on_var)?;
             t.span]),
             TermKind::Projection(ref t, i) => Ok(T![proj map(t, cutoff, on_var)?, i; t.span]),
+            TermKind::VariableDefinition(_, _) => {
+                Err(error!("A definition should not be mapped"; t.span))
+            }
+            TermKind::TypeDefinition(_, _) => {
+                Err(error!("A definition should not be mapped"; t.span))
+            }
         }
     }
     map(t, cutoff, &on_var)
@@ -537,6 +551,11 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
                 .join(", ")
         )),
         TermKind::Projection(ref t, i) => Ok(format!("{}.{}", term_to_string(t, &env)?, i,)),
+        TermKind::VariableDefinition(ref p, ref t) => {
+            let env = resolve_match(p, t, &env)?;
+            Ok(format!("let {} = {};", p, term_to_string(t, &env)?,))
+        }
+        TermKind::TypeDefinition(ref v, ref ty) => Ok(format!("type {} = {};", v, ty)),
     }
 }
 
@@ -616,6 +635,9 @@ macro_rules! T {
     (let $var:expr, $expr:expr, $body:expr; $span:expr) => {
         Rc::new(Term { kind: TermKind::Let($var.into(), $expr.clone(), $body.clone()), span: $span.into() })
     };
+    (var $var:expr, $expr:expr; $span:expr) => {
+        Rc::new(Term { kind: TermKind::VariableDefinition($var.into(), $expr.clone()), span: $span.into() })
+    };
     (record $($term:expr),*; $span:expr) => {
         Rc::new(Term { kind: TermKind::Record(vec![$($term.clone()),*]), span: $span.into() })
     };
@@ -636,10 +658,10 @@ mod tests {
     const SPAN: Span = Span::new(0, 1);
 
     fn check(input: &str, expected: expect_test::Expect) {
-        let env = Env::new();
+        let mut env = Env::new();
         expected.assert_eq(
             &term_to_string(
-                &eval(&parse(input, &env).expect("Couldn't parse"), &env)
+                &eval(&parse(input, &env).expect("Couldn't parse"), &mut env)
                     .expect("Couldn't evaluate"),
                 &Env::new(),
             )
@@ -647,10 +669,10 @@ mod tests {
         );
     }
 
-    fn new_check_env(input: &str, expected: expect_test::Expect, env: &Env) {
+    fn check_env(input: &str, expected: expect_test::Expect, env: &mut Env) {
         expected.assert_eq(
             &term_to_string(
-                &eval(&parse(input, &env).expect("Couldn't parse"), &env)
+                &eval(&parse(input, &env).expect("Couldn't parse"), env)
                     .expect("Couldn't evaluate"),
                 &env,
             )
@@ -658,12 +680,12 @@ mod tests {
         );
     }
 
-    fn check_env(lt: LTerm, expected: LTerm, env: &Env) {
+    fn old_check_env(lt: LTerm, expected: LTerm, env: &mut Env) {
         actual_check(lt, expected, env);
     }
 
-    fn actual_check(lt: LTerm, expected: LTerm, env: &Env) {
-        let eval_res = eval(&lt, &env).expect("Could not evaluate");
+    fn actual_check(lt: LTerm, expected: LTerm, env: &mut Env) {
+        let eval_res = eval(&lt, env).expect("Could not evaluate");
         assert_eq!(eval_res, expected);
     }
 
@@ -672,9 +694,10 @@ mod tests {
     fn test_eval_variable() -> Result<()> {
         let mut env = Env::new();
         let id = parse("λx:Bool.x", &env)?;
-        env.insert_variable("id", id.clone(), type_of(&id, &env)?);
+        let ty = type_of(&id, &mut env)?;
+        env.insert_variable("id", id.clone(), ty);
 
-        check_env(parse("id", &env)?, id, &env);
+        old_check_env(parse("id", &env)?, id, &mut env);
         Ok(())
     }
 
@@ -689,9 +712,11 @@ mod tests {
         let mut env = Env::new();
         let id = parse("λx:Bool.x", &env)?;
         let apply_fn = parse("λf:Bool → Bool.λb:Bool.f b", &env)?;
-        env.insert_variable("id", id.clone(), type_of(&id, &env)?);
-        env.insert_variable("applyfn", apply_fn.clone(), type_of(&apply_fn, &env)?);
-        new_check_env("applyfn id", expect![["λb:Bool.(λx:Bool.x) b"]], &env);
+        let ty = type_of(&id, &mut env)?;
+        env.insert_variable("id", id, ty);
+        let ty = type_of(&apply_fn, &mut env)?;
+        env.insert_variable("applyfn", apply_fn, ty);
+        check_env("applyfn id", expect![["λb:Bool.(λx:Bool.x) b"]], &mut env);
 
         Ok(())
     }
@@ -700,48 +725,55 @@ mod tests {
     fn test_booleans() -> Result<()> {
         let mut env = Env::new();
         let tru = parse("λt:Bool.λf:Bool.t", &env)?;
-        env.insert_variable("tru", tru.clone(), type_of(&tru, &env)?);
+        let ty = type_of(&tru, &mut env)?;
+        env.insert_variable("tru", tru, ty);
         // λt.λf.f
         let fls = parse("λt:Bool.λf:Bool.f", &env)?;
-        env.insert_variable("fls", fls.clone(), type_of(&fls, &env)?);
+        let ty = type_of(&fls, &mut env)?;
+        env.insert_variable("fls", fls, ty);
         // λb.λc. b c false
         let and = parse("λb:Bool.λc:Bool.if b then c else false", &env)?;
-        env.insert_variable("and", and.clone(), type_of(&and, &env)?);
+        let ty = type_of(&and, &mut env)?;
+        env.insert_variable("and", and, ty);
 
-        new_check_env("and true true", expect![["true"]], &env);
-        new_check_env("and true false", expect![["false"]], &env);
-        new_check_env("and false true", expect![["false"]], &env);
-        new_check_env("and false false", expect![["false"]], &env);
+        check_env("and true true", expect![["true"]], &mut env);
+        check_env("and true false", expect![["false"]], &mut env);
+        check_env("and false true", expect![["false"]], &mut env);
+        check_env("and false false", expect![["false"]], &mut env);
 
         // λb. b false true
         let not = parse("λb:Bool. if b then false else true", &env)?;
-        env.insert_variable("not", not.clone(), type_of(&not, &env)?);
+        let ty = type_of(&not, &mut env)?;
+        env.insert_variable("not", not, ty);
 
-        new_check_env("not true", expect![["false"]], &env);
-        new_check_env("not false", expect![["true"]], &env);
+        check_env("not true", expect![["false"]], &mut env);
+        check_env("not false", expect![["true"]], &mut env);
 
         // λb.λc. b true c
         let or = parse("λb:Bool.λc:Bool.if b then true else c", &env)?;
-        env.insert_variable("or", or.clone(), type_of(&or, &env)?);
+        let ty = type_of(&or, &mut env)?;
+        env.insert_variable("or", or, ty);
 
-        new_check_env("or true true", expect![["true"]], &env);
-        new_check_env("or true false", expect![["true"]], &env);
-        new_check_env("or false true", expect![["true"]], &env);
-        new_check_env("or false false", expect![["false"]], &env);
+        check_env("or true true", expect![["true"]], &mut env);
+        check_env("or true false", expect![["true"]], &mut env);
+        check_env("or false true", expect![["true"]], &mut env);
+        check_env("or false false", expect![["false"]], &mut env);
 
         let eq = parse("λb1:Bool.λb2:Bool.if b1 then b2 else not b2", &env)?;
-        env.insert_variable("eq", eq.clone(), type_of(&eq, &env)?);
-        new_check_env("eq true true", expect![["true"]], &env);
-        new_check_env("eq false true", expect![["false"]], &env);
-        new_check_env("eq true false", expect![["false"]], &env);
-        new_check_env("eq false false", expect![["true"]], &env);
+        let ty = type_of(&eq, &mut env)?;
+        env.insert_variable("eq", eq, ty);
+        check_env("eq true true", expect![["true"]], &mut env);
+        check_env("eq false true", expect![["false"]], &mut env);
+        check_env("eq true false", expect![["false"]], &mut env);
+        check_env("eq false false", expect![["true"]], &mut env);
 
         let eq = parse("λb1:Bool.λb2:Bool.not (eq b1 b2)", &env)?;
-        env.insert_variable("neq", eq.clone(), type_of(&eq, &env)?);
-        new_check_env("neq true true", expect![["false"]], &env);
-        new_check_env("neq false true", expect![["true"]], &env);
-        new_check_env("neq true false", expect![["true"]], &env);
-        new_check_env("neq false false", expect![["false"]], &env);
+        let ty = type_of(&eq, &mut env)?;
+        env.insert_variable("neq", eq, ty);
+        check_env("neq true true", expect![["false"]], &mut env);
+        check_env("neq false true", expect![["true"]], &mut env);
+        check_env("neq true false", expect![["true"]], &mut env);
+        check_env("neq false false", expect![["false"]], &mut env);
 
         Ok(())
     }
@@ -750,10 +782,12 @@ mod tests {
     fn test_shifting() -> Result<()> {
         let mut env = Env::new();
         let tru = parse("λt:Bool.λf:Bool.t", &env)?;
-        env.insert_variable("tru", tru.clone(), type_of(&tru, &env)?);
+        let ty = type_of(&tru, &mut env)?;
+        env.insert_variable("tru", tru, ty);
 
         let id = parse("λx:Bool.x", &env)?;
-        env.insert_variable("id", id.clone(), type_of(&id, &env)?);
+        let ty = type_of(&id, &mut env)?;
+        env.insert_variable("id", id.clone(), ty);
 
         let id_shifted = shift(&id, 1)?;
         // Shouldn't touch id
@@ -805,17 +839,18 @@ mod tests {
         assert_eq!(term_to_string(&t, &env)?, "λx:Bool.λx':Bool.x'");
 
         let t = parse("(λx:Bool → Bool.λy:Bool.x y) λx:Bool.x", &env)?;
-        let t = eval(&t, &env)?;
+        let t = eval(&t, &mut env)?;
         assert_eq!(term_to_string(&t, &env)?, "λy:Bool.(λx:Bool.x) y");
 
         let id = parse("λx:Bool.x", &env)?;
-        env.insert_variable("id", id.clone(), type_of(&id, &env)?);
+        let ty = type_of(&id, &mut env)?;
+        env.insert_variable("id", id, ty);
 
         let t = parse(
             "(λz:Bool → Bool.λid:(Bool → Bool) → Bool.id z) λz:Bool.id z",
             &env,
         )?;
-        let t = eval(&t, &env)?;
+        let t = eval(&t, &mut env)?;
         assert_eq!(
             term_to_string(&t, &env)?,
             "λid':(Bool → Bool) → Bool.id' λz:Bool.id z"
@@ -923,5 +958,24 @@ mod tests {
         );
         check("{true}.1", expect![[r#"true"#]]);
         check("(λt:{Bool,Bool}.t.1) {false, true}", expect![[r#"false"#]]);
+    }
+
+    #[test]
+    fn test_eval_descriptions() {
+        let mut env = Env::new();
+        check_env("let a = true;", expect![[r#"unit"#]], &mut env);
+        check_env("a", expect![[r#"true"#]], &mut env);
+
+        check_env("let {b, c} = {false, 0};", expect![[r#"unit"#]], &mut env);
+        check_env("b", expect![[r#"false"#]], &mut env);
+        check_env("c", expect![[r#"0"#]], &mut env);
+
+        check_env(
+            "let {l=d, r=e} = {l={unit}, r=λx:Bool.x};",
+            expect![[r#"unit"#]],
+            &mut env,
+        );
+        check_env("d", expect![[r#"{unit}"#]], &mut env);
+        check_env("e", expect![[r#"λx:Bool.x"#]], &mut env);
     }
 }

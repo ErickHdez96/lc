@@ -147,10 +147,7 @@ false : Bool
 
 ## TODO
 
-* Allow user defined variables.
 * Add better error messages
-* Pattern matching over records
-* Sums
 * Variants
 * General Recursion
 * Lists

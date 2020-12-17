@@ -103,39 +103,39 @@ impl fmt::Display for TyKind {
     }
 }
 
-pub fn type_of(type_t: &LTerm, env: &Env) -> Result<LTy> {
+pub fn type_of(type_t: &LTerm, env: &mut Env) -> Result<LTy> {
     match type_t.as_ref().kind {
         TermKind::True => Ok(TY![bool; type_t.span]),
         TermKind::False => Ok(TY![bool; type_t.span]),
         TermKind::Zero => Ok(TY![nat; type_t.span]),
         TermKind::Unit => Ok(TY![unit; type_t.span]),
-        TermKind::Ascription(ref t, ref ty) => match type_of(t, &env)?.as_ref() {
-            t if *t == **ty => Ok(ty.clone()),
+        TermKind::Ascription(ref t, ref ty) => match type_of(t, env)?.as_ref() {
+            t if cmp_ty(&t.kind, &ty.kind, &env) => Ok(ty.clone()),
             t => Err(error!("Expected type `{}`, got `{}`", ty, t; t.span)),
         },
-        TermKind::Succ(ref t) | TermKind::Pred(ref t) => match &type_of(t, &env)?.as_ref() {
-            t if t.kind == TyKind::Nat => Ok(TY![nat; type_t.span]),
+        TermKind::Succ(ref t) | TermKind::Pred(ref t) => match &type_of(t, env)?.as_ref() {
+            t if cmp_ty(&t.kind, &TyKind::Nat, &env) => Ok(TY![nat; type_t.span]),
             t => Err(error!("Expected type `Nat`, got `{}`", t; t.span)),
         },
-        TermKind::IsZero(ref t) => match &type_of(t, &env)?.as_ref() {
-            t if t.kind == TyKind::Nat => Ok(TY![bool; type_t.span]),
+        TermKind::IsZero(ref t) => match &type_of(t, env)?.as_ref() {
+            t if cmp_ty(&t.kind, &TyKind::Nat, &env) => Ok(TY![bool; type_t.span]),
             t => Err(error!("Expected type `Nat`, got `{}`", t; t.span)),
         },
         TermKind::Abstraction(v, ref ty, ref body) => {
             let mut env = Env::with_parent(&env);
             env.insert_local(v, ty.clone());
-            type_of(body, &env).map(|body_ty| TY![abs ty, body_ty; type_t.span])
+            type_of(body, &mut env).map(|body_ty| TY![abs ty, body_ty; type_t.span])
         }
         TermKind::Variable(idx) => env
             .get_type(idx)
             .ok_or_else(|| error!("Invalid de Bruijn index {}", idx; type_t.span)),
         TermKind::Application(ref t1, ref t2) => {
-            let t1_ty = type_of(t1, &env)?;
-            let t2_ty = type_of(t2, &env)?;
+            let t1_ty = type_of(t1, env)?;
+            let t2_ty = type_of(t2, env)?;
 
             match t1_ty.as_ref().kind {
                 TyKind::Abstraction(ref t11_ty, ref t12_ty) => {
-                    if t11_ty == &t2_ty {
+                    if cmp_ty(&t11_ty.kind, &t2_ty.kind, &env) {
                         Ok(t12_ty.clone())
                     } else {
                         Err(error!("Expected type `{}`, got `{}`", t11_ty, t2_ty; t2.span))
@@ -144,12 +144,12 @@ pub fn type_of(type_t: &LTerm, env: &Env) -> Result<LTy> {
                 _ => Err(error!("Expected an abstraction, got `{}`", t1_ty; t1.span)),
             }
         }
-        TermKind::If(ref cond, ref then, ref else_b) => match &type_of(cond, &env)?.as_ref().kind {
+        TermKind::If(ref cond, ref then, ref else_b) => match &type_of(cond, env)?.as_ref().kind {
             TyKind::Bool => {
-                let then_ty = type_of(then, &env)?;
-                let else_ty = type_of(else_b, &env)?;
+                let then_ty = type_of(then, env)?;
+                let else_ty = type_of(else_b, env)?;
 
-                if then_ty == else_ty {
+                if cmp_ty(&then_ty.kind, &else_ty.kind, &env) {
                     Ok(else_ty)
                 } else {
                     Err(error!(
@@ -161,14 +161,14 @@ pub fn type_of(type_t: &LTerm, env: &Env) -> Result<LTy> {
             ty => Err(error!("Guard conditional expects a Bool, got `{}`", ty; cond.span)),
         },
         TermKind::Let(ref p, ref t1, ref t2) => {
-            let t1 = type_of(t1, &env)?;
-            let env = resolve_match(p, &t1, &env, type_t.span)?;
-            type_of(t2, &env)
+            let t1 = type_of(t1, env)?;
+            let mut env = resolve_match(p, &t1, &env, type_t.span)?;
+            type_of(t2, &mut env)
         }
         TermKind::Record(ref elems, ref keys) => keys
             .iter()
             .cloned()
-            .map(|k| type_of(elems.get(&k).unwrap(), &env).map(|e| (k, e)))
+            .map(|k| type_of(elems.get(&k).unwrap(), env).map(|e| (k, e)))
             .collect::<Result<HashMap<_, _>>>()
             .map(|elems| {
                 Rc::new(Ty {
@@ -177,7 +177,7 @@ pub fn type_of(type_t: &LTerm, env: &Env) -> Result<LTy> {
                 })
             }),
         TermKind::Projection(ref record, elem) => {
-            let record = type_of(record, &env)?;
+            let record = type_of(record, env)?;
             match record.as_ref().kind {
                 TyKind::Record(ref elems, _) => match elems.get(&elem) {
                     Some(elem) => Ok(elem.clone()),
@@ -189,84 +189,135 @@ pub fn type_of(type_t: &LTerm, env: &Env) -> Result<LTy> {
                 _ => Err(error!("Only a record can be projected, got `{}`", record; record.span)),
             }
         }
+        TermKind::VariableDefinition(ref p, ref t) => {
+            resolve_match_mut(p, &type_of(&t, env)?, env, type_t.span)?;
+            Ok(TY![unit; type_t.span])
+        }
+        TermKind::TypeDefinition(v, ref ty) => {
+            env.insert_type(v, Rc::clone(ty));
+            Ok(TY![unit; type_t.span])
+        }
+    }
+}
+
+pub fn cmp_ty<'a>(t1: &'a TyKind, t2: &'a TyKind, env: &Env) -> bool {
+    match (t1, t2) {
+        (TyKind::Bool, TyKind::Bool) => true,
+        (TyKind::Nat, TyKind::Nat) => true,
+        (TyKind::Unit, TyKind::Unit) => true,
+        (TyKind::Abstraction(p1, r1), TyKind::Abstraction(p2, r2)) => {
+            cmp_ty(&p1.kind, &p2.kind, env) && cmp_ty(&r1.kind, &r2.kind, env)
+        }
+        (TyKind::Record(ref recs1, ref keys1), TyKind::Record(ref recs2, ref keys2)) => {
+            if keys1.len() != keys2.len() {
+                return false;
+            }
+            for (k1, k2) in keys1.iter().zip(keys2.iter()) {
+                if k1 != k2 {
+                    return false;
+                }
+                if !cmp_ty(
+                    &recs1.get(k1).unwrap().kind,
+                    &recs2.get(k1).unwrap().kind,
+                    &env,
+                ) {
+                    return false;
+                }
+            }
+            true
+        }
+        (TyKind::Base(s1), TyKind::Base(s2)) if s1 == s2 => true,
+        (TyKind::Base(s1), TyKind::Base(s2)) => {
+            let s1 = env.get_db_index(*s1).and_then(|idx| env.get_type(idx));
+            let s2 = env.get_db_index(*s2).and_then(|idx| env.get_type(idx));
+            match (s1, s2) {
+                (Some(ty1), Some(ty2)) => cmp_ty(&ty1.kind, &ty2.kind, &env),
+                _ => false,
+            }
+        }
+        (TyKind::Base(b), t) | (t, TyKind::Base(b)) => match env.get_type_from_symbol(*b) {
+            Some(b_ty) => cmp_ty(&b_ty.kind, t, env),
+            _ => false,
+        },
+        _ => false,
     }
 }
 
 fn resolve_match<'a>(p: &Pattern, t: &LTy, env: &'a Env, p_span: Span) -> Result<Env<'a>> {
     let mut env = Env::with_parent(&env);
-    inner_resolve_match(p, t, &mut env, p_span)?;
-    return Ok(env);
+    resolve_match_mut(p, t, &mut env, p_span)?;
+    Ok(env)
+}
 
-    fn inner_resolve_match(p: &Pattern, t: &LTy, mut env: &mut Env, p_span: Span) -> Result<()> {
-        match p {
-            Pattern::Var(s) => match env.get_immediate(*s) {
-                Some(_) => Err(error!("Binding `{}` already used", s; p_span)),
-                _ => {
-                    env.insert_local(*s, Rc::clone(t));
-                    Ok(())
-                }
-            },
-            Pattern::Record(recs, keys) => match t.as_ref().kind {
-                TyKind::Record(ref trecs, ref tkeys) => {
-                    if tkeys.len() > keys.len() {
-                        let mut span_iter = tkeys[keys.len()..]
+fn resolve_match_mut(p: &Pattern, t: &LTy, mut env: &mut Env, p_span: Span) -> Result<()> {
+    match p {
+        Pattern::Var(s) => match env.get_immediate(*s) {
+            Some(_) => Err(error!("Binding `{}` already used", s; p_span)),
+            _ => {
+                env.insert_local(*s, Rc::clone(t));
+                Ok(())
+            }
+        },
+        Pattern::Record(recs, keys) => match t.as_ref().kind {
+            TyKind::Record(ref trecs, ref tkeys) => {
+                if tkeys.len() > keys.len() {
+                    let mut span_iter = tkeys[keys.len()..]
+                        .iter()
+                        .map(|k| trecs.get(&k).unwrap().span);
+                    let start = span_iter.next().unwrap();
+                    let p_span = span_iter.fold(start, |acc, cur| acc.with_hi(cur.hi));
+                    // To probably do: Display missing tuple keys better
+                    return Err(error!(
+                        "The keys `{}` are not matched against",
+                        tkeys[keys.len()..]
                             .iter()
-                            .map(|k| trecs.get(&k).unwrap().span);
-                        let start = span_iter.next().unwrap();
-                        let p_span = span_iter.fold(start, |acc, cur| acc.with_hi(cur.hi));
-                        // To probably do: Display missing tuple keys better
-                        return Err(error!(
-                            "The keys `{}` are not matched against",
-                            tkeys[keys.len()..]
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            p_span
-                        ));
-                    }
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        p_span
+                    ));
+                }
 
-                    for (i, key) in keys.iter().copied().enumerate() {
-                        // The keys must be in the same order
-                        match tkeys.get(i).copied() {
-                            Some(k) if k == key => {
-                                inner_resolve_match(
-                                    recs.get(&key).unwrap(),
-                                    trecs.get(&key).unwrap(),
-                                    &mut env,
-                                    p_span,
-                                )?;
-                            }
-                            Some(_) if trecs.get(&key).is_some() => {
-                                return Err(
-                                    error!("Match keys must follow the same order as the record"; p_span),
-                                );
-                            }
-                            _ => {
-                                return Err(
-                                    error!("The key `{}` does not exist in the record", key; p_span),
-                                );
-                            }
+                for (i, key) in keys.iter().copied().enumerate() {
+                    // The keys must be in the same order
+                    match tkeys.get(i).copied() {
+                        Some(k) if k == key => {
+                            resolve_match_mut(
+                                recs.get(&key).unwrap(),
+                                trecs.get(&key).unwrap(),
+                                &mut env,
+                                p_span,
+                            )?;
+                        }
+                        Some(_) if trecs.get(&key).is_some() => {
+                            return Err(
+                                error!("Match keys must follow the same order as the record"; p_span),
+                            );
+                        }
+                        _ => {
+                            return Err(
+                                error!("The key `{}` does not exist in the record", key; p_span),
+                            );
                         }
                     }
-
-                    Ok(())
                 }
-                _ => Err(error!("Only records can be pattern matched"; p_span)),
-            },
-        }
+
+                Ok(())
+            }
+            _ => Err(error!("Only records can be pattern matched"; p_span)),
+        },
     }
 }
 
 #[macro_export]
 macro_rules! TY {
-    (bool; $span:expr) => {
-        Rc::new(Ty { kind: TyKind::Bool, span: $span.into() })
-    };
-    (nat; $span:expr) => {
-        Rc::new(Ty { kind: TyKind::Nat, span: $span.into() })
-    };
-    (unit; $span:expr) => {
+(bool; $span:expr) => {
+    Rc::new(Ty { kind: TyKind::Bool, span: $span.into() })
+};
+(nat; $span:expr) => {
+    Rc::new(Ty { kind: TyKind::Nat, span: $span.into() })
+};
+(unit; $span:expr) => {
         Rc::new(Ty { kind: TyKind::Unit, span: $span.into() })
     };
     (base $s:expr; $span:expr) => {
@@ -289,18 +340,33 @@ mod tests {
     const SPAN: Span = Span::new(0, 1);
 
     fn check(input: &str, expected: expect_test::Expect) {
-        let env = Env::new();
+        let mut env = Env::new();
         expected.assert_eq(&format!(
             "{}",
-            &type_of(&parse(input, &env).expect("Couldn't parse"), &env)
+            &type_of(&parse(input, &env).expect("Couldn't parse"), &mut env)
                 .expect("Couldn't evaluate")
         ));
     }
 
     fn check_parse_error(input: &str, expected: expect_test::Expect) {
-        let env = Env::new();
+        let mut env = Env::new();
         expected.assert_eq(
-            &type_of(&parse(input, &env).expect("Couldn't parse"), &env)
+            &type_of(&parse(input, &env).expect("Couldn't parse"), &mut env)
+                .expect_err("Shouldn't type check correctly")
+                .to_string(),
+        );
+    }
+
+    fn check_env(input: &str, expected: expect_test::Expect, env: &mut Env) {
+        expected.assert_eq(&format!(
+            "{}",
+            &type_of(&parse(input, &env).expect("Couldn't parse"), env).expect("Couldn't evaluate")
+        ));
+    }
+
+    fn check_parse_error_env(input: &str, expected: expect_test::Expect, env: &mut Env) {
+        expected.assert_eq(
+            &type_of(&parse(input, &env).expect("Couldn't parse"), env)
                 .expect_err("Shouldn't type check correctly")
                 .to_string(),
         );
@@ -498,42 +564,42 @@ mod tests {
 
     #[test]
     fn error_typecheck_let_bindings() {
-        //check_parse_error(
-        //    "let x = true in succ x",
-        //    expect![["TypeError: Expected type `Nat`, got `Bool`"]],
-        //);
-        //check_parse_error(
-        //    "let not = λb:Bool.if b then false else true in not 0",
-        //    expect![["TypeError: Expected type `Bool`, got `Nat`"]],
-        //);
-        //check_parse_error(
-        //    "let {x} = true in x",
-        //    expect![[r#"TypeError: Only records can be pattern matched"#]],
-        //);
-        //check_parse_error(
-        //    "let {x} = {0, true} in x",
-        //    expect![[r#"TypeError: The keys `2` are not matched against"#]],
-        //);
-        //check_parse_error(
-        //    "let {f=x} = {x=true} in x",
-        //    expect![[r#"TypeError: The key `f` does not exist in the record"#]],
-        //);
-        //check_parse_error(
-        //    "let {x} = {} in x",
-        //    expect![[r#"TypeError: The key `1` does not exist in the record"#]],
-        //);
+        check_parse_error(
+            "let x = true in succ x",
+            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+        );
+        check_parse_error(
+            "let not = λb:Bool.if b then false else true in not 0",
+            expect![["TypeError: Expected type `Bool`, got `Nat`"]],
+        );
+        check_parse_error(
+            "let {x} = true in x",
+            expect![[r#"TypeError: Only records can be pattern matched"#]],
+        );
+        check_parse_error(
+            "let {x} = {0, true} in x",
+            expect![[r#"TypeError: The keys `2` are not matched against"#]],
+        );
+        check_parse_error(
+            "let {f=x} = {x=true} in x",
+            expect![[r#"TypeError: The key `f` does not exist in the record"#]],
+        );
+        check_parse_error(
+            "let {x} = {} in x",
+            expect![[r#"TypeError: The key `1` does not exist in the record"#]],
+        );
         check_parse_error(
             "let {x} = {0, 0, 0} in x",
             expect![[r#"TypeError: The keys `2, 3` are not matched against"#]],
         );
-        //check_parse_error(
-        //    "let {x,x} = {0, 0} in x",
-        //    expect![[r#"TypeError: Binding `x` already used"#]],
-        //);
-        //check_parse_error(
-        //    "let {f=x,l=x} = {f=true, l=false} in x",
-        //    expect![[r#"TypeError: Binding `x` already used"#]],
-        //);
+        check_parse_error(
+            "let {x,x} = {0, 0} in x",
+            expect![[r#"TypeError: Binding `x` already used"#]],
+        );
+        check_parse_error(
+            "let {f=x,l=x} = {f=true, l=false} in x",
+            expect![[r#"TypeError: Binding `x` already used"#]],
+        );
     }
 
     #[test]
@@ -569,6 +635,46 @@ mod tests {
         check_parse_error(
             "{true}.0",
             expect![[r#"TypeError: The element `0` does not exist on the record `{Bool}`"#]],
+        );
+    }
+
+    #[test]
+    fn test_typecheck_definitions() {
+        let mut env = Env::new();
+        check_env("let x = true;", expect![[r#"Unit"#]], &mut env);
+        expect![[r#"Some(Some(Ty { span: Span { lo: 8, hi: 12 }, kind: Bool }))"#]].assert_eq(
+            &format!("{:?}", env.get_db_index("x").map(|idx| env.get_type(idx))),
+        );
+        check_env("let {y, z} = {true, 0};", expect![[r#"Unit"#]], &mut env);
+        expect![[r#"Some(Some(Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }))"#]].assert_eq(
+            &format!("{:?}", env.get_db_index("y").map(|idx| env.get_type(idx))),
+        );
+        expect![[r#"Some(Some(Ty { span: Span { lo: 20, hi: 21 }, kind: Nat }))"#]].assert_eq(
+            &format!("{:?}", env.get_db_index("z").map(|idx| env.get_type(idx))),
+        );
+        check_env("let {f=w} = {f=λx:Bool.x};", expect![[r#"Unit"#]], &mut env);
+        expect![[r#"Some(Some(Ty { span: Span { lo: 15, hi: 25 }, kind: Abstraction(Ty { span: Span { lo: 19, hi: 23 }, kind: Bool }, Ty { span: Span { lo: 19, hi: 23 }, kind: Bool }) }))"#]].assert_eq(&format!(
+            "{:?}",
+            env.get_db_index("w").map(|idx| env.get_type(idx))
+        ));
+        check_env("type UU = Unit → Unit;", expect![[r#"Unit"#]], &mut env);
+        check_env("(λu:Unit.u) as UU", expect![["UU"]], &mut env);
+    }
+
+    #[test]
+    fn error_typecheck_definitions() {
+        let mut env = Env::new();
+        check_env("let x = true;", expect![[r#"Unit"#]], &mut env);
+        check_parse_error_env(
+            "(λx:Nat.x)x",
+            expect![[r#"TypeError: Expected type `Nat`, got `Bool`"#]],
+            &mut env,
+        );
+        check_env("type UU = Unit → Unit;", expect![[r#"Unit"#]], &mut env);
+        check_parse_error_env(
+            "true as UU",
+            expect![[r#"TypeError: Expected type `UU`, got `Bool`"#]],
+            &mut env,
         );
     }
 }

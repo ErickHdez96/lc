@@ -138,7 +138,8 @@ impl<'a> Parser<'a> {
             | TokenKind::In
             | TokenKind::Assign
             | TokenKind::RBrace
-            | TokenKind::Comma => {
+            | TokenKind::Comma
+            | TokenKind::Semicolon => {
                 let t = self.next();
                 Err(error!("Expected a term, got `{}`", t; t.span))
             }
@@ -169,11 +170,16 @@ impl<'a> Parser<'a> {
                 let p = self.parse_pattern()?;
                 self.eat(TokenKind::Assign)?;
                 let t1 = self.parse_application_or_var(&env)?;
-                self.eat(TokenKind::In)?;
-                let env = resolve_match(&p, &env)?;
-                let t2 = self.parse_application_or_var(&env)?;
-                let span = span.with_hi(t2.span.hi);
-                Ok(T![let p, t1, t2; span])
+                if self.current() == TokenKind::Semicolon {
+                    let end = self.eat(TokenKind::Semicolon)?;
+                    Ok(T![var p, t1; span.with_hi(end.span.hi)])
+                } else {
+                    self.eat(TokenKind::In)?;
+                    let env = resolve_match(&p, &env)?;
+                    let t2 = self.parse_application_or_var(&env)?;
+                    let span = span.with_hi(t2.span.hi);
+                    Ok(T![let p, t1, t2; span])
+                }
             }
             TokenKind::LBrace => {
                 let span = self.current_span();
@@ -214,6 +220,18 @@ impl<'a> Parser<'a> {
                 Ok(Rc::new(Term {
                     kind: TermKind::Record(terms, keys),
                     span,
+                }))
+            }
+            TokenKind::Type => {
+                let start = self.current_span();
+                self.bump();
+                let (ident, _) = self.eat_ident(false)?;
+                self.eat(TokenKind::Assign)?;
+                let ty = self.parse_type(env)?;
+                let end = self.eat(TokenKind::Semicolon)?;
+                Ok(Rc::new(Term {
+                    span: start.with_hi(end.span.hi),
+                    kind: TermKind::TypeDefinition(ident, ty),
                 }))
             }
         }
@@ -528,6 +546,15 @@ mod tests {
     fn check_error(input: &str, expected: &str) {
         assert_eq!(
             parse(input, &Env::new())
+                .expect_err("Shouldn't parse correctly")
+                .to_string(),
+            format!("SyntaxError: {}", expected),
+        );
+    }
+
+    fn check_error_env(input: &str, expected: &str, env: &Env) {
+        assert_eq!(
+            parse(input, env)
                 .expect_err("Shouldn't parse correctly")
                 .to_string(),
             format!("SyntaxError: {}", expected),
@@ -938,5 +965,31 @@ mod tests {
             "{{true, unit}.1, 0}.1.1",
             expect![[r#"{{true, unit}.1, 0}.1.1"#]],
         );
+    }
+
+    #[test]
+    fn test_parse_definitions() {
+        check(
+            "let x = true;",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 13 }, kind: VariableDefinition(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 12 }, kind: True }) })"#
+            ]],
+        );
+        check(
+            "type UU = Unit → Unit;",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 24 }, kind: TypeDefinition(Symbol("UU"), Ty { span: Span { lo: 10, hi: 23 }, kind: Abstraction(Ty { span: Span { lo: 10, hi: 14 }, kind: Unit }, Ty { span: Span { lo: 19, hi: 23 }, kind: Unit }) }) })"#
+            ]],
+        );
+    }
+
+    #[test]
+    fn error_parse_definitions() {
+        let mut env = Env::new();
+        env.insert_type(
+            "UU",
+            TY![abs TY![unit; Span::new(0, 1)], TY![unit; Span::new(0, 1)]; Span::new(0, 1)],
+        );
+        check_error_env("UU", "Variable `UU` not bound", &env);
     }
 }
