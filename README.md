@@ -99,7 +99,7 @@ false : Bool
 
 ```
 >> {true}
-{true} : Bool
+{true} : {Bool}
 
 >> {true}.1
 true : Bool
