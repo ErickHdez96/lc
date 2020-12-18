@@ -1,4 +1,9 @@
-use lc::{env::base_env, parser::parse, print_error, term::eval};
+use lc::{
+    env::{base_env, base_tyenv},
+    parser::parse,
+    print_error,
+    term::eval,
+};
 use lc::{term::term_to_string, types::type_of};
 use log::{error, warn};
 use rustyline::{error::ReadlineError, Editor};
@@ -10,6 +15,7 @@ pub fn run_repl() {
     println!("Hello! Welcome to the lambda calculus evaluator");
 
     let mut env = base_env();
+    let mut tyenv = base_tyenv();
 
     loop {
         let input = rl.readline(">> ");
@@ -24,10 +30,14 @@ pub fn run_repl() {
                 "" => {}
                 line => {
                     rl.add_history_entry(line);
-                    match parse(line, &env)
-                        .and_then(|p| eval(&p, &mut env))
-                        .and_then(|p| Ok((term_to_string(&p, &env)?, type_of(&p, &mut env)?)))
-                    {
+                    match parse(line, &mut env)
+                        .and_then(|p| eval(&p, &mut env, &mut tyenv))
+                        .and_then(|p| {
+                            Ok((
+                                term_to_string(&p, &env)?,
+                                type_of(&p, &mut env, &mut tyenv)?,
+                            ))
+                        }) {
                         Ok((term, ty)) => println!("{} : {}", term, ty),
                         Err(e) => print_error(&e, line),
                     }

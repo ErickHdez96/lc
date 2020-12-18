@@ -1,4 +1,4 @@
-use crate::{term::Pattern, Env, Error, ErrorKind, LTerm, Span, Symbol, TermKind, TY};
+use crate::{env::TyEnv, term::Pattern, Env, Error, ErrorKind, LTerm, Span, Symbol, TermKind, TY};
 use std::{collections::HashMap, fmt, rc::Rc};
 
 type Result<T> = std::result::Result<T, Error>;
@@ -34,15 +34,23 @@ impl PartialEq for Ty {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TyKind {
+    /// Bool
     Bool,
+    /// Nat
     Nat,
+    /// Unit
     Unit,
+    /// <id> (e.g. A, B, Option)
     Base(Symbol),
+    /// T → T
     Abstraction(LTy, LTy),
+    /// {lᵢ:Tᵢ}
     Record(
         HashMap<Symbol, LTy>,
         /** Original order of the keys */ Vec<Symbol>,
     ),
+    /// <lᵢ:Tᵢ>
+    Variant(HashMap<Symbol, LTy>, Vec<Symbol>),
 }
 
 pub type LTy = Rc<Ty>;
@@ -93,82 +101,99 @@ impl fmt::Display for TyKind {
                     f,
                     "{{{}}}",
                     keys.iter()
-                        .cloned()
+                        .copied()
                         .map(|k| format!("{}{}", symbol_to_record_key(k), elems.get(&k).unwrap()))
                         .collect::<Vec<_>>()
                         .join(", ")
+                )
+            }
+            Self::Variant(variants, keys) => {
+                write!(
+                    f,
+                    "<{}>",
+                    keys.iter()
+                        .copied()
+                        .map(|k| format!("{}:{}", k, variants.get(&k).unwrap()))
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 )
             }
         }
     }
 }
 
-pub fn type_of(type_t: &LTerm, env: &mut Env) -> Result<LTy> {
+pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> {
     match type_t.as_ref().kind {
         TermKind::True => Ok(TY![bool; type_t.span]),
         TermKind::False => Ok(TY![bool; type_t.span]),
         TermKind::Zero => Ok(TY![nat; type_t.span]),
         TermKind::Unit => Ok(TY![unit; type_t.span]),
-        TermKind::Ascription(ref t, ref ty) => match type_of(t, env)?.as_ref() {
-            t if cmp_ty(&t.kind, &ty.kind, &env) => Ok(ty.clone()),
+        TermKind::Ascription(ref t, ref ty) => match type_of(t, env, tyenv)?.as_ref() {
+            t if cmp_ty(&t.kind, &ty.kind, &tyenv) => Ok(ty.clone()),
             t => Err(error!("Expected type `{}`, got `{}`", ty, t; t.span)),
         },
-        TermKind::Succ(ref t) | TermKind::Pred(ref t) => match &type_of(t, env)?.as_ref() {
-            t if cmp_ty(&t.kind, &TyKind::Nat, &env) => Ok(TY![nat; type_t.span]),
+        TermKind::Succ(ref t) | TermKind::Pred(ref t) => match &type_of(t, env, tyenv)?.as_ref() {
+            t if cmp_ty(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![nat; type_t.span]),
             t => Err(error!("Expected type `Nat`, got `{}`", t; t.span)),
         },
-        TermKind::IsZero(ref t) => match &type_of(t, env)?.as_ref() {
-            t if cmp_ty(&t.kind, &TyKind::Nat, &env) => Ok(TY![bool; type_t.span]),
+        TermKind::IsZero(ref t) => match &type_of(t, env, tyenv)?.as_ref() {
+            t if cmp_ty(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![bool; type_t.span]),
             t => Err(error!("Expected type `Nat`, got `{}`", t; t.span)),
         },
         TermKind::Abstraction(v, ref ty, ref body) => {
             let mut env = Env::with_parent(&env);
-            env.insert_local(v, ty.clone());
-            type_of(body, &mut env).map(|body_ty| TY![abs ty, body_ty; type_t.span])
+            env.insert_type(v, &ty)?;
+            type_of(body, &mut env, tyenv).map(|body_ty| TY![abs ty, body_ty; type_t.span])
         }
         TermKind::Variable(idx) => env
-            .get_type(idx)
+            .get_type_from_index(idx)
             .ok_or_else(|| error!("Invalid de Bruijn index {}", idx; type_t.span)),
         TermKind::Application(ref t1, ref t2) => {
-            let t1_ty = type_of(t1, env)?;
-            let t2_ty = type_of(t2, env)?;
+            // If t1 is `let x = t;` or `type A = T;`, we can ignore the result
+            // of evaluating it (i.e. Unit) and just return `t2`.
+            let ignore_t1 = t1.is_definition();
+            let t1_ty = type_of(t1, env, tyenv)?;
+            let t2_ty = type_of(t2, env, tyenv)?;
 
             match t1_ty.as_ref().kind {
                 TyKind::Abstraction(ref t11_ty, ref t12_ty) => {
-                    if cmp_ty(&t11_ty.kind, &t2_ty.kind, &env) {
+                    if cmp_ty(&t11_ty.kind, &t2_ty.kind, &tyenv) {
                         Ok(t12_ty.clone())
                     } else {
                         Err(error!("Expected type `{}`, got `{}`", t11_ty, t2_ty; t2.span))
                     }
                 }
+                _ if ignore_t1 => Ok(t2_ty),
                 _ => Err(error!("Expected an abstraction, got `{}`", t1_ty; t1.span)),
             }
         }
-        TermKind::If(ref cond, ref then, ref else_b) => match &type_of(cond, env)?.as_ref().kind {
-            TyKind::Bool => {
-                let then_ty = type_of(then, env)?;
-                let else_ty = type_of(else_b, env)?;
+        TermKind::If(ref cond, ref then, ref else_b) => {
+            match &type_of(cond, env, tyenv)?.as_ref().kind {
+                TyKind::Bool => {
+                    let then_ty = type_of(then, env, tyenv)?;
+                    let else_ty = type_of(else_b, env, tyenv)?;
 
-                if cmp_ty(&then_ty.kind, &else_ty.kind, &env) {
-                    Ok(else_ty)
-                } else {
-                    Err(error!(
-                        "Arms of conditional have different types: `{}`, and `{}`",
-                        then_ty, else_ty; type_t.span
-                    ))
+                    if cmp_ty(&then_ty.kind, &else_ty.kind, &tyenv) {
+                        Ok(else_ty)
+                    } else {
+                        Err(error!(
+                            "Arms of conditional have different types: `{}`, and `{}`",
+                            then_ty, else_ty; type_t.span
+                        ))
+                    }
                 }
+                ty => Err(error!("Guard conditional expects a Bool, got `{}`", ty; cond.span)),
             }
-            ty => Err(error!("Guard conditional expects a Bool, got `{}`", ty; cond.span)),
-        },
+        }
         TermKind::Let(ref p, ref t1, ref t2) => {
-            let t1 = type_of(t1, env)?;
+            let t1 = type_of(t1, env, tyenv)?;
             let mut env = resolve_match(p, &t1, &env, type_t.span)?;
-            type_of(t2, &mut env)
+            type_of(t2, &mut env, tyenv)
         }
         TermKind::Record(ref elems, ref keys) => keys
             .iter()
             .cloned()
-            .map(|k| type_of(elems.get(&k).unwrap(), env).map(|e| (k, e)))
+            .map(|k| type_of(elems.get(&k).unwrap(), env, tyenv).map(|e| (k, e)))
             .collect::<Result<HashMap<_, _>>>()
             .map(|elems| {
                 Rc::new(Ty {
@@ -177,7 +202,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env) -> Result<LTy> {
                 })
             }),
         TermKind::Projection(ref record, elem) => {
-            let record = type_of(record, env)?;
+            let record = type_of(record, env, tyenv)?;
             match record.as_ref().kind {
                 TyKind::Record(ref elems, _) => match elems.get(&elem) {
                     Some(elem) => Ok(elem.clone()),
@@ -190,23 +215,105 @@ pub fn type_of(type_t: &LTerm, env: &mut Env) -> Result<LTy> {
             }
         }
         TermKind::VariableDefinition(ref p, ref t) => {
-            resolve_match_mut(p, &type_of(&t, env)?, env, type_t.span)?;
+            let ty = match type_of(&t, env, tyenv) {
+                ty @ Ok(_) => ty,
+                e @ Err(_) => {
+                    remove_pattern_matches(p, env);
+                    e
+                }
+            }?;
+            resolve_match_mut(p, &ty, env, type_t.span)?;
             Ok(TY![unit; type_t.span])
         }
         TermKind::TypeDefinition(v, ref ty) => {
-            env.insert_type(v, Rc::clone(ty));
+            tyenv.insert(v, ty)?;
             Ok(TY![unit; type_t.span])
+        }
+        TermKind::Variant(label, ref term, ref ty) => {
+            let term_ty = type_of(term, env, tyenv)?;
+            match &eval_ty(&ty, &tyenv).kind {
+                TyKind::Variant(ref variants, _) => match variants.get(&label) {
+                    Some(expected_ty) => {
+                        if cmp_ty(&term_ty.kind, &expected_ty.kind, &tyenv) {
+                            Ok(Rc::clone(ty))
+                        } else {
+                            Err(
+                                error!("Variant `{}` expects type `{}`, got `{}`", ty, expected_ty, term_ty; term_ty.span),
+                            )
+                        }
+                    }
+                    None => Err(
+                        error!("The label `{}` is not a variant of `{}`", label, ty; type_t.span),
+                    ),
+                },
+                _ => Err(error!("Expected a variant type, got `{}`", ty; ty.span)),
+            }
+        }
+        TermKind::Case(ref value, ref branches, _) => {
+            let value_ty = type_of(value, env, tyenv)?;
+            let evald_value_ty = eval_ty(&value_ty, &tyenv);
+            let variants = if let TyKind::Variant(ref variants, _) = evald_value_ty.kind {
+                variants
+            } else {
+                return Err(error!("Expected a variant type, got `{}`", value_ty; value_ty.span));
+            };
+
+            let mut ret_ty: Option<LTy> = None;
+
+            for (variant, (var, term)) in branches {
+                let var_ty = match variants.get(variant) {
+                    Some(var_ty) => var_ty,
+                    None => {
+                        return Err(
+                            error!("The label `{}` is not a variant of `{}`", variant, value_ty; type_t.span),
+                        )
+                    }
+                };
+
+                let mut env = Env::with_parent(&env);
+                env.insert_type(*var, var_ty)?;
+                let term_ty = type_of(term, &mut env, tyenv)?;
+                if let Some(ret_ty) = &ret_ty {
+                    if !cmp_ty(&ret_ty.kind, &term_ty.kind, &tyenv) {
+                        return Err(
+                            error!("Expected type `{}`, got `{}`", ret_ty, term_ty; term_ty.span),
+                        );
+                    }
+                } else {
+                    ret_ty = Some(term_ty);
+                }
+            }
+
+            if branches.len() < variants.len() {
+                for variant in variants.keys() {
+                    if branches.get(variant).is_none() {
+                        return Err(error!("The label `{}` is not covered", variant; type_t.span));
+                    }
+                }
+            }
+
+            // If there are no case branches, that is a parser error
+            Ok(ret_ty.expect("at least one case branch"))
         }
     }
 }
 
-pub fn cmp_ty<'a>(t1: &'a TyKind, t2: &'a TyKind, env: &Env) -> bool {
+pub fn eval_ty(t1: &LTy, tyenv: &TyEnv) -> LTy {
+    match &t1.as_ref().kind {
+        TyKind::Base(name) => match tyenv.get(*name) {
+            Some(ref ty) => eval_ty(ty, tyenv),
+            None => Rc::clone(t1),
+        },
+        _ => Rc::clone(t1),
+    }
+}
+pub fn cmp_ty<'a>(t1: &'a TyKind, t2: &'a TyKind, tyenv: &TyEnv) -> bool {
     match (t1, t2) {
         (TyKind::Bool, TyKind::Bool) => true,
         (TyKind::Nat, TyKind::Nat) => true,
         (TyKind::Unit, TyKind::Unit) => true,
         (TyKind::Abstraction(p1, r1), TyKind::Abstraction(p2, r2)) => {
-            cmp_ty(&p1.kind, &p2.kind, env) && cmp_ty(&r1.kind, &r2.kind, env)
+            cmp_ty(&p1.kind, &p2.kind, tyenv) && cmp_ty(&r1.kind, &r2.kind, tyenv)
         }
         (TyKind::Record(ref recs1, ref keys1), TyKind::Record(ref recs2, ref keys2)) => {
             if keys1.len() != keys2.len() {
@@ -219,7 +326,7 @@ pub fn cmp_ty<'a>(t1: &'a TyKind, t2: &'a TyKind, env: &Env) -> bool {
                 if !cmp_ty(
                     &recs1.get(k1).unwrap().kind,
                     &recs2.get(k1).unwrap().kind,
-                    &env,
+                    &tyenv,
                 ) {
                     return false;
                 }
@@ -228,15 +335,15 @@ pub fn cmp_ty<'a>(t1: &'a TyKind, t2: &'a TyKind, env: &Env) -> bool {
         }
         (TyKind::Base(s1), TyKind::Base(s2)) if s1 == s2 => true,
         (TyKind::Base(s1), TyKind::Base(s2)) => {
-            let s1 = env.get_db_index(*s1).and_then(|idx| env.get_type(idx));
-            let s2 = env.get_db_index(*s2).and_then(|idx| env.get_type(idx));
+            let s1 = tyenv.get(*s1);
+            let s2 = tyenv.get(*s2);
             match (s1, s2) {
-                (Some(ty1), Some(ty2)) => cmp_ty(&ty1.kind, &ty2.kind, &env),
+                (Some(ty1), Some(ty2)) => cmp_ty(&ty1.kind, &ty2.kind, &tyenv),
                 _ => false,
             }
         }
-        (TyKind::Base(b), t) | (t, TyKind::Base(b)) => match env.get_type_from_symbol(*b) {
-            Some(b_ty) => cmp_ty(&b_ty.kind, t, env),
+        (TyKind::Base(b), t) | (t, TyKind::Base(b)) => match tyenv.get(*b) {
+            Some(b_ty) => cmp_ty(&b_ty.kind, t, tyenv),
             _ => false,
         },
         _ => false,
@@ -249,15 +356,25 @@ fn resolve_match<'a>(p: &Pattern, t: &LTy, env: &'a Env, p_span: Span) -> Result
     Ok(env)
 }
 
+fn remove_pattern_matches(p: &Pattern, env: &mut Env) {
+    match p {
+        Pattern::Var(s) => {
+            env.remove_symbol(*s);
+        }
+        Pattern::Record(ref recs, _) => {
+            for pat in recs.values() {
+                remove_pattern_matches(pat, env);
+            }
+        }
+    }
+}
+
 fn resolve_match_mut(p: &Pattern, t: &LTy, mut env: &mut Env, p_span: Span) -> Result<()> {
     match p {
-        Pattern::Var(s) => match env.get_immediate(*s) {
-            Some(_) => Err(error!("Binding `{}` already used", s; p_span)),
-            _ => {
-                env.insert_local(*s, Rc::clone(t));
-                Ok(())
-            }
-        },
+        Pattern::Var(s) => {
+            env.insert_type(*s, t)?;
+            Ok(())
+        }
         Pattern::Record(recs, keys) => match t.as_ref().kind {
             TyKind::Record(ref trecs, ref tkeys) => {
                 if tkeys.len() > keys.len() {
@@ -341,44 +458,60 @@ mod tests {
 
     fn check(input: &str, expected: expect_test::Expect) {
         let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
         expected.assert_eq(&format!(
             "{}",
-            &type_of(&parse(input, &env).expect("Couldn't parse"), &mut env)
-                .expect("Couldn't evaluate")
+            &type_of(
+                &parse(input, &mut env).expect("Couldn't parse"),
+                &mut env,
+                &mut tyenv
+            )
+            .expect("Couldn't evaluate")
         ));
     }
 
     fn check_parse_error(input: &str, expected: expect_test::Expect) {
         let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
         expected.assert_eq(
-            &type_of(&parse(input, &env).expect("Couldn't parse"), &mut env)
-                .expect_err("Shouldn't type check correctly")
-                .to_string(),
+            &type_of(
+                &parse(input, &mut env).expect("Couldn't parse"),
+                &mut env,
+                &mut tyenv,
+            )
+            .expect_err("Shouldn't type check correctly")
+            .to_string(),
         );
     }
 
-    fn check_env(input: &str, expected: expect_test::Expect, env: &mut Env) {
+    fn check_env(input: &str, expected: expect_test::Expect, env: &mut Env, tyenv: &mut TyEnv) {
         expected.assert_eq(&format!(
             "{}",
-            &type_of(&parse(input, &env).expect("Couldn't parse"), env).expect("Couldn't evaluate")
+            &type_of(&parse(input, env).expect("Couldn't parse"), env, tyenv)
+                .expect("Couldn't evaluate")
         ));
     }
 
-    fn check_parse_error_env(input: &str, expected: expect_test::Expect, env: &mut Env) {
+    fn check_parse_error_env(
+        input: &str,
+        expected: expect_test::Expect,
+        env: &mut Env,
+        tyenv: &mut TyEnv,
+    ) {
         expected.assert_eq(
-            &type_of(&parse(input, &env).expect("Couldn't parse"), env)
+            &type_of(&parse(input, env).expect("Couldn't parse"), env, tyenv)
                 .expect_err("Shouldn't type check correctly")
                 .to_string(),
         );
     }
 
     #[test]
-    fn test_constant_types() {
+    fn typecheck_constant_types() {
         check("true", expect![[r#"Bool"#]]);
     }
 
     #[test]
-    fn test_types() {
+    fn typecheck_types() {
         check("λx:Bool.x", expect![[r#"Bool → Bool"#]]);
         // (Bool → Bool) → Bool → Bool
         check(
@@ -388,7 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn test_if() {
+    fn typecheck_if() {
         check(
             "if (λx:Bool.x) true then λx:Bool.false else λx:Bool.x",
             expect![[r#"Bool → Bool"#]],
@@ -396,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wrong_application_types() {
+    fn error_wrong_application_types() {
         check_parse_error(
             "(λx:Bool.x)(λx:Bool.x)",
             expect![["TypeError: Expected type `Bool`, got `Bool → Bool`"]],
@@ -412,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wrong_if_types() {
+    fn error_wrong_if_types() {
         check_parse_error(
             "if λx:Bool.x then true else false",
             expect![["TypeError: Guard conditional expects a Bool, got `Bool → Bool`"]],
@@ -426,7 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn test_printing_correct_precedence() {
+    fn print_correct_precedence() {
         let ty = TY![abs TY![bool; SPAN], TY![abs TY![bool; SPAN], TY![bool; SPAN]; SPAN]; SPAN];
         // → is right associative
         assert_eq!(ty.to_string(), "Bool → Bool → Bool");
@@ -436,14 +569,14 @@ mod tests {
     }
 
     #[test]
-    fn test_typecheck_base_types() {
+    fn typecheck_base_types() {
         check("λx:A.x", expect![[r#"A → A"#]]);
         check("λx:B.x", expect![[r#"B → B"#]]);
         check("λf:A → A.λx:A. f(f(x))", expect![[r#"(A → A) → A → A"#]]);
     }
 
     #[test]
-    fn test_typecheck_nat() {
+    fn typecheck_nat() {
         check("0", expect![[r#"Nat"#]]);
         check("5", expect![[r#"Nat"#]]);
         check("pred 0", expect![[r#"Nat"#]]);
@@ -496,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn test_typecheck_unit() {
+    fn typecheck_unit() {
         check("unit", expect![[r#"Unit"#]]);
         check("λx:Unit.x", expect![[r#"Unit → Unit"#]]);
         check("λx:Nat.unit", expect![[r#"Nat → Unit"#]]);
@@ -516,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn test_typecheck_ascription() {
+    fn typecheck_ascription() {
         check("true as Bool", expect![[r#"Bool"#]]);
         check("0 as Nat", expect![[r#"Nat"#]]);
         check("(λx:Bool.x) as Bool → Bool", expect![[r#"Bool → Bool"#]]);
@@ -545,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn test_typecheck_let_bindings() {
+    fn typecheck_let_bindings() {
         check("let x = true in x", expect![[r#"Bool"#]]);
         check(
             "let not = λb:Bool.if b then false else true in not true",
@@ -592,18 +725,10 @@ mod tests {
             "let {x} = {0, 0, 0} in x",
             expect![[r#"TypeError: The keys `2, 3` are not matched against"#]],
         );
-        check_parse_error(
-            "let {x,x} = {0, 0} in x",
-            expect![[r#"TypeError: Binding `x` already used"#]],
-        );
-        check_parse_error(
-            "let {f=x,l=x} = {f=true, l=false} in x",
-            expect![[r#"TypeError: Binding `x` already used"#]],
-        );
     }
 
     #[test]
-    fn test_typecheck_record() {
+    fn typecheck_record() {
         check("{true, true}", expect![[r#"{Bool, Bool}"#]]);
         check(
             "{first=true, last=true}",
@@ -639,42 +764,217 @@ mod tests {
     }
 
     #[test]
-    fn test_typecheck_definitions() {
+    fn typecheck_definitions() {
         let mut env = Env::new();
-        check_env("let x = true;", expect![[r#"Unit"#]], &mut env);
+        let mut tyenv = TyEnv::new();
+        check_env("let x = true;", expect![[r#"Unit"#]], &mut env, &mut tyenv);
         expect![[r#"Some(Some(Ty { span: Span { lo: 8, hi: 12 }, kind: Bool }))"#]].assert_eq(
-            &format!("{:?}", env.get_db_index("x").map(|idx| env.get_type(idx))),
+            &format!(
+                "{:?}",
+                env.get_db_index("x")
+                    .map(|idx| env.get_type_from_index(idx))
+            ),
         );
-        check_env("let {y, z} = {true, 0};", expect![[r#"Unit"#]], &mut env);
+        check_env(
+            "let {y, z} = {true, 0};",
+            expect![[r#"Unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
         expect![[r#"Some(Some(Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }))"#]].assert_eq(
-            &format!("{:?}", env.get_db_index("y").map(|idx| env.get_type(idx))),
+            &format!(
+                "{:?}",
+                env.get_db_index("y")
+                    .map(|idx| env.get_type_from_index(idx))
+            ),
         );
         expect![[r#"Some(Some(Ty { span: Span { lo: 20, hi: 21 }, kind: Nat }))"#]].assert_eq(
-            &format!("{:?}", env.get_db_index("z").map(|idx| env.get_type(idx))),
+            &format!(
+                "{:?}",
+                env.get_db_index("z")
+                    .map(|idx| env.get_type_from_index(idx))
+            ),
         );
-        check_env("let {f=w} = {f=λx:Bool.x};", expect![[r#"Unit"#]], &mut env);
+        check_env(
+            "let {f=w} = {f=λx:Bool.x};",
+            expect![[r#"Unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
         expect![[r#"Some(Some(Ty { span: Span { lo: 15, hi: 25 }, kind: Abstraction(Ty { span: Span { lo: 19, hi: 23 }, kind: Bool }, Ty { span: Span { lo: 19, hi: 23 }, kind: Bool }) }))"#]].assert_eq(&format!(
             "{:?}",
-            env.get_db_index("w").map(|idx| env.get_type(idx))
+            env.get_db_index("w").map(|idx| env.get_type_from_index(idx))
         ));
-        check_env("type UU = Unit → Unit;", expect![[r#"Unit"#]], &mut env);
-        check_env("(λu:Unit.u) as UU", expect![["UU"]], &mut env);
+        check_env(
+            "type UU = Unit → Unit;",
+            expect![[r#"Unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
+        check_env("(λu:Unit.u) as UU", expect![["UU"]], &mut env, &mut tyenv);
+
+        check_parse_error_env(
+            "let a = 3 as Bool;",
+            expect![[r#"TypeError: Expected type `Bool`, got `Nat`"#]],
+            &mut env,
+            &mut tyenv,
+        );
+        check_env("let a = 3;", expect![[r#"Unit"#]], &mut env, &mut tyenv);
     }
 
     #[test]
     fn error_typecheck_definitions() {
         let mut env = Env::new();
-        check_env("let x = true;", expect![[r#"Unit"#]], &mut env);
+        let mut tyenv = TyEnv::new();
+        check_env("let x = true;", expect![[r#"Unit"#]], &mut env, &mut tyenv);
         check_parse_error_env(
             "(λx:Nat.x)x",
             expect![[r#"TypeError: Expected type `Nat`, got `Bool`"#]],
             &mut env,
+            &mut tyenv,
         );
-        check_env("type UU = Unit → Unit;", expect![[r#"Unit"#]], &mut env);
+        check_env(
+            "type UU = Unit → Unit;",
+            expect![[r#"Unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
         check_parse_error_env(
             "true as UU",
             expect![[r#"TypeError: Expected type `UU`, got `Bool`"#]],
             &mut env,
+            &mut tyenv,
+        );
+    }
+
+    #[test]
+    fn typecheck_variants() {
+        let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
+        check_env(
+            "type MaybeNat = <some:Nat, none:Unit>;",
+            expect![[r#"Unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "<some=0> as MaybeNat",
+            expect![[r#"MaybeNat"#]],
+            &mut env,
+            &mut tyenv,
+        );
+        check_env(
+            "<none=unit> as MaybeNat",
+            expect![[r#"MaybeNat"#]],
+            &mut env,
+            &mut tyenv,
+        );
+    }
+
+    #[test]
+    fn error_typecheck_variants() {
+        let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
+        check_env(
+            "type MaybeNat = <some:Nat, none:Unit>;",
+            expect![[r#"Unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error_env(
+            "0 as MaybeNat",
+            expect![[r#"TypeError: Expected type `MaybeNat`, got `Nat`"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error_env(
+            "<some=0> as Nat",
+            expect![[r#"TypeError: Expected a variant type, got `Nat`"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error_env(
+            "<invalid=0> as MaybeNat",
+            expect![[r#"TypeError: The label `invalid` is not a variant of `MaybeNat`"#]],
+            &mut env,
+            &mut tyenv,
+        );
+    }
+
+    #[test]
+    fn typecheck_case_of() {
+        let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
+        check_env(
+            "type MaybeNat = <some:Nat, none:Unit>;",
+            expect![[r#"Unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            r#"case <some=0> as MaybeNat of
+                          <some=x> => true
+                          | <none=_> => false"#,
+            expect![[r#"Bool"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            r#"λn:MaybeNat.case n of
+                                <some=x> => <some=succ x> as MaybeNat
+                                | <none=u> => <none=u> as MaybeNat"#,
+            expect![[r#"MaybeNat → MaybeNat"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            r#"(λn:MaybeNat.case n of
+                                <some=x> => <some=succ x> as MaybeNat
+                                | <none=u> => <none=u> as MaybeNat)
+                <none=unit> as MaybeNat"#,
+            expect![[r#"MaybeNat"#]],
+            &mut env,
+            &mut tyenv,
+        );
+    }
+
+    #[test]
+    fn error_typecheck_case_of() {
+        let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
+        check_env(
+            "type MaybeNat = <some:Nat, none:Unit>;",
+            expect![[r#"Unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error_env(
+            "case 0 of <some=_> => unit",
+            expect![[r#"TypeError: Expected a variant type, got `Nat`"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error_env(
+            "case <none=unit> as MaybeNat of <invalid=_> => unit",
+            expect![[r#"TypeError: The label `invalid` is not a variant of `MaybeNat`"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error_env(
+            "case <none=unit> as MaybeNat of <some=_> => unit",
+            expect![[r#"TypeError: The label `none` is not covered"#]],
+            &mut env,
+            &mut tyenv,
         );
     }
 }

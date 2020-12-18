@@ -244,4 +244,5 @@ U+2071 = ⁱ (superscript i)
 <C-k>s* = σ
 <C-k>1s = ₁
 <C-k>1S = ¹
+<C-k>=> = ⇒
 ```

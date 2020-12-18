@@ -17,6 +17,7 @@ pub enum ErrorKind {
     Parser,
     Runtime,
     Type,
+    Name,
 }
 
 impl Error {
@@ -44,6 +45,7 @@ impl fmt::Display for ErrorKind {
                 Self::Parser => "Syntax",
                 Self::Runtime => "Runtime",
                 Self::Type => "Type",
+                Self::Name => "Name",
             }
         )
     }
@@ -59,7 +61,7 @@ pub fn print_error(error: &Error, _source: &str) {
             UnicodeWidthStr::width(&_source[error.span.lo as usize..error.span.hi as usize]);
 
         let error_signal = if actual_width > 2 {
-            format!("^{}^", "⎺".repeat(actual_width - 2))
+            format!("^{}^", "-".repeat(actual_width - 2))
         } else {
             "^".repeat(std::cmp::max(actual_width, 1))
         };

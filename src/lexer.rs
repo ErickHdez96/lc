@@ -74,10 +74,16 @@ pub enum TokenKind {
     #[token("type")]
     Type,
 
+    #[token("case")]
+    Case,
+
+    #[token("of")]
+    Of,
+
     #[regex("[0-9]+")]
     Number,
 
-    #[regex(r"[a-zA-Z][a-zA-Z0-9]*'*")]
+    #[regex(r"[a-zA-Z][a-zA-Z0-9_]*'*")]
     Ident,
 
     #[token(".")]
@@ -98,6 +104,12 @@ pub enum TokenKind {
     #[token("}")]
     RBrace,
 
+    #[token("<")]
+    Lt,
+
+    #[token(">")]
+    Gt,
+
     #[token(";")]
     Semicolon,
 
@@ -107,8 +119,14 @@ pub enum TokenKind {
     #[regex("(→|->)")]
     Arrow,
 
+    #[regex("(=>|⇒)")]
+    FatArrow,
+
     #[token("=")]
     Assign,
+
+    #[token("|")]
+    Pipe,
 
     #[regex("_")]
     Wildcard,
@@ -137,6 +155,8 @@ impl TokenKind {
                 | TokenKind::Let
                 | TokenKind::LBrace
                 | TokenKind::Type
+                | TokenKind::Case
+                | TokenKind::Lt
         )
     }
 
@@ -172,6 +192,8 @@ impl std::fmt::Display for TokenKind {
                 If => "if",
                 Then => "then",
                 Else => "else",
+                Case => "case",
+                Of => "of",
                 Ident => "<ident>",
                 Period => ".",
                 Comma => ",",
@@ -179,10 +201,14 @@ impl std::fmt::Display for TokenKind {
                 RParen => ")",
                 LBrace => "{",
                 RBrace => "}",
+                Lt => "<",
+                Gt => ">",
                 Semicolon => ";",
                 Colon => ":",
                 Arrow => "→",
+                FatArrow => "⇒",
                 Assign => "=",
+                Pipe => "|",
                 Wildcard => "_",
                 Succ => "succ",
                 Pred => "pred",
@@ -237,6 +263,8 @@ mod tests {
         check(r"\", vec![Lambda]);
         check("→", vec![Arrow]);
         check("->", vec![Arrow]);
+        check("=>", vec![FatArrow]);
+        check("⇒", vec![FatArrow]);
         check("_", vec![Wildcard]);
         check("x", vec![Ident]);
         check("true", vec![True]);
@@ -247,6 +275,8 @@ mod tests {
         check("iszero", vec![IsZero]);
         check("pred", vec![Pred]);
         check("succ", vec![Succ]);
+        check("case", vec![Case]);
+        check("of", vec![Of]);
         check("0", vec![Number]);
         check("10", vec![Number]);
         check("unit", vec![Unit]);
@@ -260,9 +290,12 @@ mod tests {
         check(")", vec![RParen]);
         check("{", vec![LBrace]);
         check("}", vec![RBrace]);
+        check("<", vec![Lt]);
+        check(">", vec![Gt]);
         check(";", vec![Semicolon]);
         check(":", vec![Colon]);
         check("=", vec![Assign]);
+        check("|", vec![Pipe]);
         check(
             "(λx.x) y",
             vec![LParen, Lambda, Ident, Period, Ident, RParen, Ident],
