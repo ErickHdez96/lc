@@ -148,6 +148,5 @@ false : Bool
 ## TODO
 
 * Add better error messages
-* Variants
 * General Recursion
 * Lists

@@ -18,6 +18,9 @@ t ::=                   terms:
     { lᵢ=tᵢ (i∈1..n) }          record
     t.l                         projection
     let p = t in t              pattern binding
+    <l=t> as T                  tagging
+    case t of
+      <lᵢ=xᵢ>=>tᵢ (i∈1..n)      case
 
 v ::=                   values:
     λx:T.t                      abstraction value
@@ -42,6 +45,7 @@ T ::=                   types:
     A                           base type
     Unit                        unit type
     { lᵢ:Tᵢ (i∈1..n) }          type of records
+    <lᵢ:Tᵢ (i∈1..n)>            type of variants
 
 Γ ::=                   contexts:
     ∅                           empty context
@@ -116,6 +120,18 @@ t₁.i → t′₁.i
 --------------------------------------  E-Rcd
 { lᵢ=vᵢ (i∈1..j-1) ,lⱼ=tⱼ  ,lₖ=tₖ (k∈j+1..n) } →
 { lᵢ=vᵢ (i∈1..j-1), lⱼ=t′ⱼ ,lₖ=tₖ (k∈j+1..n) }
+
+case (<lj=vj> as T) of
+  <lᵢ=xᵢ> ⇒ tᵢ (i∈1..n) → [xj ↦ vj] tj  E-CaseVariant
+
+            t₀ → t′₀
+-----------------------------------     E-Case
+case t₀ of <lᵢ=xᵢ> ⇒ tᵢ (i∈1..n)
+→ case t′₀ of <lᵢ=xᵢ> ⇒ tᵢ (i∈1..n)
+
+          tᵢ → t′ᵢ
+----------------------------            E-Variant
+<lᵢ=tᵢ> as T → <lᵢ=t′ᵢ> as T
 ```
 
 ## Typing
@@ -174,6 +190,16 @@ iszero t₁ : Bool
 Γ ⊢ t₁ : {lᵢ:Tᵢ (i∈1..n)}
 -------------------------               T-Proj
     Γ ⊢ t₁.lⱼ : Tⱼ
+
+          Γ ⊢ tj : Tj
+-------------------------------         T-Variant
+Γ ⊢ <lj=tj> as <lᵢ:Tᵢ (i∈1..n)>
+  :<lᵢ:Tᵢ(i∈1..n)>
+
+    Γ ⊢ t₀ : <lᵢ:Tᵢ (i∈1..n)>
+   for each i Γ,xᵢ:Tᵢ ⊢ tᵢ : T
+--------------------------------------  T-Variant
+Γ⊢case t₀ of <lᵢ=tᵢ> ⇒ tᵢ (i∈1..n) : T
 ```
 
 ## Derived forms
