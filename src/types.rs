@@ -295,6 +295,21 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             // If there are no case branches, that is a parser error
             Ok(ret_ty.expect("at least one case branch"))
         }
+        TermKind::Fix(ref t) => {
+            let t_ty = type_of(t, env, tyenv)?;
+            match &t_ty.kind {
+                TyKind::Abstraction(par_ty, ret_ty) => {
+                    if cmp_ty(&par_ty.kind, &ret_ty.kind, tyenv) {
+                        Ok(Rc::clone(ret_ty))
+                    } else {
+                        Err(
+                            error!("Fix expects return type to be `{}`, got `{}", par_ty, ret_ty; type_t.span),
+                        )
+                    }
+                }
+                _ => Err(error!("Fix expects an abstraction, got `{}`", t_ty; type_t.span)),
+            }
+        }
     }
 }
 
@@ -532,15 +547,15 @@ mod tests {
     fn error_wrong_application_types() {
         check_parse_error(
             "(λx:Bool.x)(λx:Bool.x)",
-            expect![["TypeError: Expected type `Bool`, got `Bool → Bool`"]],
+            expect![[r#"[12-24]TypeError: Expected type `Bool`, got `Bool → Bool`"#]],
         );
         check_parse_error(
             "true λx:Bool.x",
-            expect![["TypeError: Expected an abstraction, got `Bool`"]],
+            expect![[r#"[0-4]TypeError: Expected an abstraction, got `Bool`"#]],
         );
         check_parse_error(
             "λf:Bool → Bool.λx:Bool.x f",
-            expect![["TypeError: Expected an abstraction, got `Bool`"]],
+            expect![[r#"[27-28]TypeError: Expected an abstraction, got `Bool`"#]],
         );
     }
 
@@ -548,12 +563,12 @@ mod tests {
     fn error_wrong_if_types() {
         check_parse_error(
             "if λx:Bool.x then true else false",
-            expect![["TypeError: Guard conditional expects a Bool, got `Bool → Bool`"]],
+            expect![[r#"[3-13]TypeError: Guard conditional expects a Bool, got `Bool → Bool`"#]],
         );
         check_parse_error(
             "if true then true else λx:Bool.x",
             expect![[
-                "TypeError: Arms of conditional have different types: `Bool`, and `Bool → Bool`"
+                r#"[0-33]TypeError: Arms of conditional have different types: `Bool`, and `Bool → Bool`"#
             ]],
         );
     }
@@ -596,35 +611,37 @@ mod tests {
     fn error_typecheck_nat() {
         check_parse_error(
             "pred true",
-            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+            expect![[r#"[5-9]TypeError: Expected type `Nat`, got `Bool`"#]],
         );
         check_parse_error(
             "succ true",
-            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+            expect![[r#"[5-9]TypeError: Expected type `Nat`, got `Bool`"#]],
         );
         check_parse_error(
             "succ succ succ pred succ true",
-            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+            expect![[r#"[25-29]TypeError: Expected type `Nat`, got `Bool`"#]],
         );
         check_parse_error(
             "iszero true",
-            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+            expect![[r#"[7-11]TypeError: Expected type `Nat`, got `Bool`"#]],
         );
         check_parse_error(
             "pred iszero 0",
-            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+            expect![[r#"[5-13]TypeError: Expected type `Nat`, got `Bool`"#]],
         );
         check_parse_error(
             "pred iszero true",
-            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+            expect![[r#"[12-16]TypeError: Expected type `Nat`, got `Bool`"#]],
         );
         check_parse_error(
             "if 0 then true else false",
-            expect![["TypeError: Guard conditional expects a Bool, got `Nat`"]],
+            expect![[r#"[3-4]TypeError: Guard conditional expects a Bool, got `Nat`"#]],
         );
         check_parse_error(
             "if iszero pred succ 0 then true else 0",
-            expect![["TypeError: Arms of conditional have different types: `Bool`, and `Nat`"]],
+            expect![[
+                r#"[0-38]TypeError: Arms of conditional have different types: `Bool`, and `Nat`"#
+            ]],
         );
     }
 
@@ -640,11 +657,11 @@ mod tests {
     fn error_typecheck_unit() {
         check_parse_error(
             "iszero unit",
-            expect![["TypeError: Expected type `Nat`, got `Unit`"]],
+            expect![[r#"[7-11]TypeError: Expected type `Nat`, got `Unit`"#]],
         );
         check_parse_error(
             "(λx:Nat.unit) unit",
-            expect![["TypeError: Expected type `Nat`, got `Unit`"]],
+            expect![[r#"[15-19]TypeError: Expected type `Nat`, got `Unit`"#]],
         );
     }
 
@@ -659,20 +676,20 @@ mod tests {
     fn error_typecheck_ascription() {
         check_parse_error(
             "true as Nat",
-            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+            expect![[r#"[0-4]TypeError: Expected type `Nat`, got `Bool`"#]],
         );
         check_parse_error(
             "(λx:Bool.x) as Bool → Nat",
-            expect![["TypeError: Expected type `Bool → Nat`, got `Bool → Bool`"]],
+            expect![[r#"[0-12]TypeError: Expected type `Bool → Nat`, got `Bool → Bool`"#]],
         );
         check_parse_error(
             "λf:Bool → Bool.λb:Bool.(f as Bool → Nat) b",
-            expect![["TypeError: Expected type `Bool → Nat`, got `Bool → Bool`"]],
+            expect![[r#"[4-17]TypeError: Expected type `Bool → Nat`, got `Bool → Bool`"#]],
         );
         check_parse_error(
             "(λf:Bool → Bool.λb:Bool.f b) as Bool → Bool → Bool",
             expect![[
-                "TypeError: Expected type `Bool → Bool → Bool`, got `(Bool → Bool) → Bool → Bool`"
+                r#"[0-32]TypeError: Expected type `Bool → Bool → Bool`, got `(Bool → Bool) → Bool → Bool`"#
             ]],
         );
     }
@@ -699,31 +716,31 @@ mod tests {
     fn error_typecheck_let_bindings() {
         check_parse_error(
             "let x = true in succ x",
-            expect![["TypeError: Expected type `Nat`, got `Bool`"]],
+            expect![[r#"[8-12]TypeError: Expected type `Nat`, got `Bool`"#]],
         );
         check_parse_error(
             "let not = λb:Bool.if b then false else true in not 0",
-            expect![["TypeError: Expected type `Bool`, got `Nat`"]],
+            expect![[r#"[52-53]TypeError: Expected type `Bool`, got `Nat`"#]],
         );
         check_parse_error(
             "let {x} = true in x",
-            expect![[r#"TypeError: Only records can be pattern matched"#]],
+            expect![[r#"[0-19]TypeError: Only records can be pattern matched"#]],
         );
         check_parse_error(
             "let {x} = {0, true} in x",
-            expect![[r#"TypeError: The keys `2` are not matched against"#]],
+            expect![[r#"[14-18]TypeError: The keys `2` are not matched against"#]],
         );
         check_parse_error(
             "let {f=x} = {x=true} in x",
-            expect![[r#"TypeError: The key `f` does not exist in the record"#]],
+            expect![[r#"[0-25]TypeError: The key `f` does not exist in the record"#]],
         );
         check_parse_error(
             "let {x} = {} in x",
-            expect![[r#"TypeError: The key `1` does not exist in the record"#]],
+            expect![[r#"[0-17]TypeError: The key `1` does not exist in the record"#]],
         );
         check_parse_error(
             "let {x} = {0, 0, 0} in x",
-            expect![[r#"TypeError: The keys `2, 3` are not matched against"#]],
+            expect![[r#"[14-18]TypeError: The keys `2, 3` are not matched against"#]],
         );
     }
 
@@ -747,19 +764,19 @@ mod tests {
     fn error_typecheck_record() {
         check_parse_error(
             "{0}.1 as Bool",
-            expect![[r#"TypeError: Expected type `Bool`, got `Nat`"#]],
+            expect![[r#"[1-2]TypeError: Expected type `Bool`, got `Nat`"#]],
         );
         check_parse_error(
             "{{unit}}.1.1 as Bool",
-            expect![[r#"TypeError: Expected type `Bool`, got `Unit`"#]],
+            expect![[r#"[2-6]TypeError: Expected type `Bool`, got `Unit`"#]],
         );
         check_parse_error(
             "{} as Bool",
-            expect![["TypeError: Expected type `Bool`, got `{}`"]],
+            expect![[r#"[0-2]TypeError: Expected type `Bool`, got `{}`"#]],
         );
         check_parse_error(
             "{true}.0",
-            expect![[r#"TypeError: The element `0` does not exist on the record `{Bool}`"#]],
+            expect![[r#"[0-8]TypeError: The element `0` does not exist on the record `{Bool}`"#]],
         );
     }
 
@@ -815,7 +832,7 @@ mod tests {
 
         check_parse_error_env(
             "let a = 3 as Bool;",
-            expect![[r#"TypeError: Expected type `Bool`, got `Nat`"#]],
+            expect![[r#"[8-9]TypeError: Expected type `Bool`, got `Nat`"#]],
             &mut env,
             &mut tyenv,
         );
@@ -829,7 +846,7 @@ mod tests {
         check_env("let x = true;", expect![[r#"Unit"#]], &mut env, &mut tyenv);
         check_parse_error_env(
             "(λx:Nat.x)x",
-            expect![[r#"TypeError: Expected type `Nat`, got `Bool`"#]],
+            expect![[r#"[11-12]TypeError: Expected type `Nat`, got `Bool`"#]],
             &mut env,
             &mut tyenv,
         );
@@ -841,7 +858,7 @@ mod tests {
         );
         check_parse_error_env(
             "true as UU",
-            expect![[r#"TypeError: Expected type `UU`, got `Bool`"#]],
+            expect![[r#"[0-4]TypeError: Expected type `UU`, got `Bool`"#]],
             &mut env,
             &mut tyenv,
         );
@@ -885,21 +902,21 @@ mod tests {
 
         check_parse_error_env(
             "0 as MaybeNat",
-            expect![[r#"TypeError: Expected type `MaybeNat`, got `Nat`"#]],
+            expect![[r#"[0-1]TypeError: Expected type `MaybeNat`, got `Nat`"#]],
             &mut env,
             &mut tyenv,
         );
 
         check_parse_error_env(
             "<some=0> as Nat",
-            expect![[r#"TypeError: Expected a variant type, got `Nat`"#]],
+            expect![[r#"[12-15]TypeError: Expected a variant type, got `Nat`"#]],
             &mut env,
             &mut tyenv,
         );
 
         check_parse_error_env(
             "<invalid=0> as MaybeNat",
-            expect![[r#"TypeError: The label `invalid` is not a variant of `MaybeNat`"#]],
+            expect![[r#"[0-23]TypeError: The label `invalid` is not a variant of `MaybeNat`"#]],
             &mut env,
             &mut tyenv,
         );
@@ -958,21 +975,63 @@ mod tests {
 
         check_parse_error_env(
             "case 0 of <some=_> => unit",
-            expect![[r#"TypeError: Expected a variant type, got `Nat`"#]],
+            expect![[r#"[5-6]TypeError: Expected a variant type, got `Nat`"#]],
             &mut env,
             &mut tyenv,
         );
 
         check_parse_error_env(
             "case <none=unit> as MaybeNat of <invalid=_> => unit",
-            expect![[r#"TypeError: The label `invalid` is not a variant of `MaybeNat`"#]],
+            expect![[r#"[0-51]TypeError: The label `invalid` is not a variant of `MaybeNat`"#]],
             &mut env,
             &mut tyenv,
         );
 
         check_parse_error_env(
             "case <none=unit> as MaybeNat of <some=_> => unit",
-            expect![[r#"TypeError: The label `none` is not covered"#]],
+            expect![[r#"[0-48]TypeError: The label `none` is not covered"#]],
+            &mut env,
+            &mut tyenv,
+        );
+    }
+
+    #[test]
+    fn typecheck_fix() {
+        let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
+
+        check_env(
+            r#"let ff = λie:Nat → Bool.
+                         λx:Nat.
+                          if iszero x then true
+                          else if iszero (pred x) then false
+                          else ie (pred (pred x));"#,
+            expect![[r#"Unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            r#"let iseven = fix ff; iseven"#,
+            expect![[r#"Nat → Bool"#]],
+            &mut env,
+            &mut tyenv,
+        );
+    }
+
+    #[test]
+    fn typecheck_letrec() {
+        let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
+
+        check_env(
+            r#"letrec iseven: Nat → Bool =
+                λx:Nat.
+                    if iszero x then true
+                    else if iszero (pred x) then false
+                    else iseven (pred (pred x))
+                in iseven 7"#,
+            expect![[r#"Bool"#]],
             &mut env,
             &mut tyenv,
         );

@@ -80,6 +80,12 @@ pub enum TokenKind {
     #[token("of")]
     Of,
 
+    #[token("fix")]
+    Fix,
+
+    #[token("letrec")]
+    Letrec,
+
     #[regex("[0-9]+")]
     Number,
 
@@ -157,6 +163,8 @@ impl TokenKind {
                 | TokenKind::Type
                 | TokenKind::Case
                 | TokenKind::Lt
+                | TokenKind::Fix
+                | TokenKind::Letrec
         )
     }
 
@@ -218,6 +226,8 @@ impl std::fmt::Display for TokenKind {
                 In => "in",
                 Type => "type",
                 IsZero => "iszero",
+                Fix => "fix",
+                Letrec => "letrec",
                 Number => "<number>",
                 Error => "<unknown char>",
                 Eof => "<eof>",
@@ -284,6 +294,8 @@ mod tests {
         check("let", vec![Let]);
         check("in", vec![In]);
         check("type", vec![Type]);
+        check("fix", vec![Fix]);
+        check("letrec", vec![Letrec]);
         check(".", vec![Period]);
         check(",", vec![Comma]);
         check("(", vec![LParen]);

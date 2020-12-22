@@ -255,6 +255,42 @@ impl<'a> Parser<'a> {
                     kind: TermKind::Variant(ident, t, ty),
                 }))
             }
+            TokenKind::Fix => {
+                let start = self.current_span();
+                self.bump();
+                let t = self.parse_term(env)?;
+                Ok(Rc::new(Term {
+                    span: start.with_hi(t.span.hi),
+                    kind: TermKind::Fix(t),
+                }))
+            }
+            TokenKind::Letrec => {
+                let start = self.current_span();
+                self.bump();
+                let (x, x_span) = self.eat_ident(false)?;
+                self.eat(TokenKind::Colon)?;
+                let ty = self.parse_type(env)?;
+                self.eat(TokenKind::Assign)?;
+                let mut fixenv = Env::with_parent(&env);
+                fixenv.insert_symbol(x, x_span)?;
+                let t1 = self.parse_application_or_var(&mut fixenv)?;
+                self.eat(TokenKind::In)?;
+                let t2 = self.parse_application_or_var(&mut fixenv)?;
+                Ok(Rc::new(Term {
+                    span: start.with_hi(t2.span.hi),
+                    kind: TermKind::Let(
+                        Box::new(Pattern::Var(x)),
+                        Rc::new(Term {
+                            span: x_span.with_hi(t1.span.hi),
+                            kind: TermKind::Fix(Rc::new(Term {
+                                span: x_span.with_hi(t1.span.hi),
+                                kind: TermKind::Abstraction(x, ty, t1),
+                            })),
+                        }),
+                        t2,
+                    ),
+                }))
+            }
         }
     }
 
@@ -640,20 +676,24 @@ mod tests {
     }
 
     fn check_error(input: &str, expected: &str) {
+        let error = parse(input, &mut Env::new()).expect_err("Shouldn't parse correctly");
         assert_eq!(
-            parse(input, &mut Env::new())
-                .expect_err("Shouldn't parse correctly")
-                .to_string(),
-            format!("SyntaxError: {}", expected),
+            error.to_string(),
+            format!(
+                "[{}-{}]SyntaxError: {}",
+                error.span.lo, error.span.hi, expected
+            ),
         );
     }
 
     fn check_error_with_kind(input: &str, expected: &str, error_kind: ErrorKind) {
+        let error = parse(input, &mut Env::new()).expect_err("Shouldn't parse correctly");
         assert_eq!(
-            parse(input, &mut Env::new())
-                .expect_err("Shouldn't parse correctly")
-                .to_string(),
-            format!("{}Error: {}", error_kind, expected),
+            error.to_string(),
+            format!(
+                "[{}-{}]{}Error: {}",
+                error.span.lo, error.span.hi, error_kind, expected
+            ),
         );
     }
 
@@ -938,35 +978,35 @@ mod tests {
 
     #[test]
     fn parse_let_bindings() {
-        // check(
-        //     "let x = true in x",
-        //     expect![[
-        //         r#"Ok(Term { span: Span { lo: 0, hi: 17 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 12 }, kind: True }, Term { span: Span { lo: 16, hi: 17 }, kind: Variable(0) }) })"#
-        //     ]],
-        // );
-        // check(
-        //     "let not = λb:Bool.if b then false else true in not true",
-        //     expect![[
-        //         r#"Ok(Term { span: Span { lo: 0, hi: 56 }, kind: Let(Var(Symbol("not")), Term { span: Span { lo: 10, hi: 44 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, Term { span: Span { lo: 19, hi: 44 }, kind: If(Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) }, Term { span: Span { lo: 29, hi: 34 }, kind: False }, Term { span: Span { lo: 40, hi: 44 }, kind: True }) }) }, Term { span: Span { lo: 48, hi: 56 }, kind: Application(Term { span: Span { lo: 48, hi: 51 }, kind: Variable(0) }, Term { span: Span { lo: 52, hi: 56 }, kind: True }) }) })"#
-        //     ]],
-        // );
-        // check(
-        //     "let x = let y = false in y in x",
-        //     expect![[
-        //         r#"Ok(Term { span: Span { lo: 0, hi: 31 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 26 }, kind: Let(Var(Symbol("y")), Term { span: Span { lo: 16, hi: 21 }, kind: False }, Term { span: Span { lo: 25, hi: 26 }, kind: Variable(0) }) }, Term { span: Span { lo: 30, hi: 31 }, kind: Variable(0) }) })"#
-        //     ]],
-        // );
+        check(
+            "let x = true in x",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 17 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 12 }, kind: True }, Term { span: Span { lo: 16, hi: 17 }, kind: Variable(0) }) })"#
+            ]],
+        );
+        check(
+            "let not = λb:Bool.if b then false else true in not true",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 56 }, kind: Let(Var(Symbol("not")), Term { span: Span { lo: 10, hi: 44 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, Term { span: Span { lo: 19, hi: 44 }, kind: If(Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) }, Term { span: Span { lo: 29, hi: 34 }, kind: False }, Term { span: Span { lo: 40, hi: 44 }, kind: True }) }) }, Term { span: Span { lo: 48, hi: 56 }, kind: Application(Term { span: Span { lo: 48, hi: 51 }, kind: Variable(0) }, Term { span: Span { lo: 52, hi: 56 }, kind: True }) }) })"#
+            ]],
+        );
+        check(
+            "let x = let y = false in y in x",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 31 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 26 }, kind: Let(Var(Symbol("y")), Term { span: Span { lo: 16, hi: 21 }, kind: False }, Term { span: Span { lo: 25, hi: 26 }, kind: Variable(0) }) }, Term { span: Span { lo: 30, hi: 31 }, kind: Variable(0) }) })"#
+            ]],
+        );
 
-        // check(
-        //     "let {x} = {1} in x",
-        //     expect![[
-        //         r#"Ok(Term { span: Span { lo: 0, hi: 18 }, kind: Let(Record({Symbol("1"): Var(Symbol("x"))}, [Symbol("1")]), Term { span: Span { lo: 10, hi: 13 }, kind: Record({Symbol("1"): Term { span: Span { lo: 11, hi: 12 }, kind: Succ(Term { span: Span { lo: 11, hi: 12 }, kind: Zero }) }}, [Symbol("1")]) }, Term { span: Span { lo: 17, hi: 18 }, kind: Variable(0) }) })"#
-        //     ]],
-        // );
-        // check_stringify(
-        //     "let {f=f, l=l} = {f=1, l=0} in f",
-        //     expect![[r#"let {f=f, l=l} = {f=succ 0, l=0} in f"#]],
-        // );
+        check(
+            "let {x} = {1} in x",
+            expect![[
+                r#"Ok(Term { span: Span { lo: 0, hi: 18 }, kind: Let(Record({Symbol("1"): Var(Symbol("x"))}, [Symbol("1")]), Term { span: Span { lo: 10, hi: 13 }, kind: Record({Symbol("1"): Term { span: Span { lo: 11, hi: 12 }, kind: Succ(Term { span: Span { lo: 11, hi: 12 }, kind: Zero }) }}, [Symbol("1")]) }, Term { span: Span { lo: 17, hi: 18 }, kind: Variable(0) }) })"#
+            ]],
+        );
+        check_stringify(
+            "let {f=f, l=l} = {f=1, l=0} in f",
+            expect![[r#"let {f=f, l=l} = {f=succ 0, l=0} in f"#]],
+        );
 
         let mut env = Env::new();
         check_env(
@@ -1142,6 +1182,29 @@ mod tests {
             "#,
             expect![[
                 r#"λb:MaybeNat.case b of <some=n> ⇒ <some=iszero n> as MaybeBool | <none=_> ⇒ <none=unit> as MaybeBool"#
+            ]],
+        );
+    }
+
+    #[test]
+    fn parse_fix() {
+        check_stringify(
+            "fix λf:Bool → Bool.λx:Bool.x",
+            expect![[r#"fix λf:Bool → Bool.λx:Bool.x"#]],
+        );
+    }
+
+    #[test]
+    fn parse_letrec() {
+        check_stringify(
+            r#"letrec iseven: Nat → Bool =
+                λx:Nat.
+                    if iszero x then true
+                    else if iszero (pred x) then false
+                    else iseven (pred (pred x))
+                in iseven 7"#,
+            expect![[
+                r#"let iseven = fix λiseven':Nat → Bool.λx:Nat.if iszero x then true else if iszero pred x then false else iseven' pred pred x in iseven succ succ succ succ succ succ succ 0"#
             ]],
         );
     }

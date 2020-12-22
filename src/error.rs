@@ -32,7 +32,11 @@ impl Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}Error: {}", self.kind, self.msg)
+        write!(
+            f,
+            "[{}-{}]{}Error: {}",
+            self.span.lo, self.span.hi, self.kind, self.msg
+        )
     }
 }
 

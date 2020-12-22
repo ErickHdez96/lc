@@ -21,6 +21,7 @@ t ::=                   terms:
     <l=t> as T                  tagging
     case t of
       <lᵢ=xᵢ>=>tᵢ (i∈1..n)      case
+    fix t                       fixed point of t
 
 v ::=                   values:
     λx:T.t                      abstraction value
@@ -132,6 +133,13 @@ case t₀ of <lᵢ=xᵢ> ⇒ tᵢ (i∈1..n)
           tᵢ → t′ᵢ
 ----------------------------            E-Variant
 <lᵢ=tᵢ> as T → <lᵢ=t′ᵢ> as T
+
+fix (λx:T₁.t₂) →
+[x ↦ (fix (λx:T₁.t₂))]t₂                E-FixBeta
+
+    t₁ → t′₁
+----------------                        E-Fix
+fix t₁ → fix t′₁
 ```
 
 ## Typing
@@ -200,6 +208,10 @@ iszero t₁ : Bool
    for each i Γ,xᵢ:Tᵢ ⊢ tᵢ : T
 --------------------------------------  T-Variant
 Γ⊢case t₀ of <lᵢ=tᵢ> ⇒ tᵢ (i∈1..n) : T
+
+Γ ⊢ t₁ : T₁ → T₁
+----------------                        T-Fix
+ Γ ⊢ fix t₁ : T₁
 ```
 
 ## Derived forms
@@ -208,6 +220,11 @@ iszero t₁ : Bool
        def
 t₁;t₂   =       (λx:Unit.t₂)t₁
                 where x ∉ FV(t₂)
+
+
+                        def
+letrec x : T₁ = t₂ in t₂ = 
+  let x = fix (λx:T₁.t₁) in t₂
 ```
 
 ```

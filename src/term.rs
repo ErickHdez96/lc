@@ -162,6 +162,7 @@ pub enum TermKind {
         CaseBranches,
         /* For printing purposes */ Vec<Symbol>,
     ),
+    Fix(LTerm),
 }
 
 pub type CaseBranches = HashMap<Symbol, (Symbol, LTerm)>;
@@ -330,6 +331,22 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
                 None => {
                     Err(error!("There was an error during type checking, invalid label"; term.span))
                 }
+            }
+        }
+        TermKind::Fix(ref t) => {
+            let t = eval_(t, env)?;
+
+            match &t.kind {
+                TermKind::Abstraction(_, _, t2) => {
+                    let t = Rc::new(Term {
+                        span: eval_t.span,
+                        kind: TermKind::Fix(Rc::clone(&t)),
+                    });
+                    eval_(&term_subst_top(&t, t2)?, env)
+                }
+                _ => Err(
+                    error!("Fix expects an abstraction, got `{}`", term_to_string(&t, env)?; eval_t.span),
+                ),
             }
         }
     }
@@ -565,6 +582,10 @@ where
                         })
                     })
             }
+            TermKind::Fix(ref fft) => Ok(Rc::new(Term {
+                span: t.span,
+                kind: TermKind::Fix(map(fft, cutoff, on_var)?),
+            })),
         }
     }
     map(t, cutoff, &on_var)
@@ -662,6 +683,7 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
                 .collect::<Result<Vec<_>>>()?
                 .join(" | "),
         )),
+        TermKind::Fix(ref t) => Ok(format!("fix {}", term_to_string(t, &env)?,)),
     }
 }
 
@@ -1194,6 +1216,52 @@ mod tests {
                                 | <none=u> => <none=u> as MaybeNat)
               <none=unit> as MaybeNat",
             expect![[r#"<none=unit> as MaybeNat"#]],
+            &mut env,
+            &mut tyenv,
+        );
+    }
+
+    #[test]
+    fn eval_fix() {
+        let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
+
+        check_env(
+            r#"let ff = λie:Nat → Bool.
+                         λx:Nat.
+                          if iszero x then true
+                          else if iszero (pred x) then false
+                          else ie (pred (pred x));"#,
+            expect![[r#"unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            r#"let iseven = fix ff;"#,
+            expect![[r#"unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(r#"iseven 7"#, expect![[r#"false"#]], &mut env, &mut tyenv);
+
+        check_env(r#"iseven 6"#, expect![[r#"true"#]], &mut env, &mut tyenv);
+    }
+
+    #[test]
+    fn eval_letrec() {
+        let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
+
+        check_env(
+            r#"letrec iseven: Nat → Bool =
+                λx:Nat.
+                    if iszero x then true
+                    else if iszero (pred x) then false
+                    else iseven (pred (pred x))
+                in iseven 7"#,
+            expect![[r#"false"#]],
             &mut env,
             &mut tyenv,
         );
