@@ -274,22 +274,40 @@ impl<'a> Parser<'a> {
                 let mut fixenv = Env::with_parent(&env);
                 fixenv.insert_symbol(x, x_span)?;
                 let t1 = self.parse_application_or_var(&mut fixenv)?;
-                self.eat(TokenKind::In)?;
-                let t2 = self.parse_application_or_var(&mut fixenv)?;
-                Ok(Rc::new(Term {
-                    span: start.with_hi(t2.span.hi),
-                    kind: TermKind::Let(
-                        Box::new(Pattern::Var(x)),
-                        Rc::new(Term {
-                            span: x_span.with_hi(t1.span.hi),
-                            kind: TermKind::Fix(Rc::new(Term {
+                if self.current() == TokenKind::Semicolon {
+                    let end = self.eat(TokenKind::Semicolon)?;
+                    env.insert_symbol(x, x_span)?;
+                    Ok(Rc::new(Term {
+                        span: start.with_hi(end.span.hi),
+                        kind: TermKind::VariableDefinition(
+                            Box::new(Pattern::Var(x)),
+                            Rc::new(Term {
                                 span: x_span.with_hi(t1.span.hi),
-                                kind: TermKind::Abstraction(x, ty, t1),
-                            })),
-                        }),
-                        t2,
-                    ),
-                }))
+                                kind: TermKind::Fix(Rc::new(Term {
+                                    span: x_span.with_hi(t1.span.hi),
+                                    kind: TermKind::Abstraction(x, ty, t1),
+                                })),
+                            }),
+                        ),
+                    }))
+                } else {
+                    self.eat(TokenKind::In)?;
+                    let t2 = self.parse_application_or_var(&mut fixenv)?;
+                    Ok(Rc::new(Term {
+                        span: start.with_hi(t2.span.hi),
+                        kind: TermKind::Let(
+                            Box::new(Pattern::Var(x)),
+                            Rc::new(Term {
+                                span: x_span.with_hi(t1.span.hi),
+                                kind: TermKind::Fix(Rc::new(Term {
+                                    span: x_span.with_hi(t1.span.hi),
+                                    kind: TermKind::Abstraction(x, ty, t1),
+                                })),
+                            }),
+                            t2,
+                        ),
+                    }))
+                }
             }
         }
     }
@@ -666,12 +684,10 @@ mod tests {
     }
 
     fn check_stringify(input: &str, expected: expect_test::Expect) {
+        let mut env = Env::new();
         expected.assert_eq(
-            &term_to_string(
-                &parse(input, &mut Env::new()).expect("Couldn't parse"),
-                &Env::new(),
-            )
-            .expect("Couldn't stringify"),
+            &term_to_string(&parse(input, &mut env).expect("Couldn't parse"), &env)
+                .expect("Couldn't stringify"),
         );
     }
 
@@ -1005,7 +1021,7 @@ mod tests {
         );
         check_stringify(
             "let {f=f, l=l} = {f=1, l=0} in f",
-            expect![[r#"let {f=f, l=l} = {f=succ 0, l=0} in f"#]],
+            expect![[r#"let {f=f, l=l} = {f=1, l=0} in f"#]],
         );
 
         let mut env = Env::new();
@@ -1204,7 +1220,20 @@ mod tests {
                     else iseven (pred (pred x))
                 in iseven 7"#,
             expect![[
-                r#"let iseven = fix λiseven':Nat → Bool.λx:Nat.if iszero x then true else if iszero pred x then false else iseven' pred pred x in iseven succ succ succ succ succ succ succ 0"#
+                r#"let iseven = fix λiseven':Nat → Bool.λx:Nat.if iszero x then true else if iszero pred x then false else iseven' pred pred x in iseven 7"#
+            ]],
+        );
+
+        check_stringify(
+            r#"letrec iseven: Nat → Bool =
+                λx:Nat.
+                    if iszero x then true
+                    else if iszero (pred x) then false
+                    else iseven (pred (pred x));
+                iseven 7
+                "#,
+            expect![[
+                r#"let iseven = fix λiseven':Nat → Bool.λx:Nat.if iszero x then true else if iszero pred x then false else iseven' pred pred x; iseven 7"#
             ]],
         );
     }

@@ -621,7 +621,27 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
         TermKind::False => Ok(String::from("false")),
         TermKind::Zero => Ok(String::from("0")),
         TermKind::Pred(ref t) => Ok(format!("pred {}", term_to_string(t, &env)?)),
-        TermKind::Succ(ref t) => Ok(format!("succ {}", term_to_string(t, &env)?)),
+        TermKind::Succ(ref t) => {
+            let mut n = 1u64;
+            let mut inner_t = t;
+
+            loop {
+                match &inner_t.kind {
+                    TermKind::Succ(ref t) => {
+                        n += 1;
+                        inner_t = t;
+                    }
+                    TermKind::Zero => {
+                        break;
+                    }
+                    _ => {
+                        return Ok(format!("succ {}", term_to_string(t, &env)?));
+                    }
+                }
+            }
+
+            Ok(format!("{}", n))
+        }
         TermKind::IsZero(ref t) => Ok(format!("iszero {}", term_to_string(t, &env)?)),
         TermKind::Ascription(ref t, _) => term_to_string(t, &env),
         TermKind::If(ref c, ref t, ref e) => Ok(format!(
@@ -1022,15 +1042,15 @@ mod tests {
     #[test]
     fn eval_nat() {
         check("0", expect![["0"]]);
-        check("1", expect![["succ 0"]]);
+        check("1", expect![[r#"1"#]]);
         check("iszero 0", expect![[r#"true"#]]);
         check("iszero succ 0", expect![[r#"false"#]]);
         check("iszero pred succ 0", expect![[r#"true"#]]);
         check("pred 0", expect![[r#"0"#]]);
         check("pred succ 0", expect![[r#"0"#]]);
         check("pred pred pred pred 0", expect![[r#"0"#]]);
-        check("succ succ pred 0", expect![[r#"succ succ 0"#]]);
-        check("pred 3", expect![[r#"succ succ 0"#]]);
+        check("succ succ pred 0", expect![[r#"2"#]]);
+        check("pred 3", expect![[r#"2"#]]);
         check("(λx:Nat.iszero pred x) 0", expect![[r#"true"#]]);
         check("(λx:Nat.iszero pred x) 1", expect![[r#"true"#]]);
         check("(λx:Nat.iszero pred x) 2", expect![[r#"false"#]]);
@@ -1075,7 +1095,7 @@ mod tests {
         check("let {x} = {true} in x", expect![[r#"true"#]]);
         check(
             "let {f=f, l=l} = {f=0, l=true} in succ f",
-            expect![[r#"succ 0"#]],
+            expect![[r#"1"#]],
         );
         check(
             "let {f=f, l=l} = {f={0, true}, l={unit}} in f",
@@ -1191,7 +1211,7 @@ mod tests {
 
         check_env(
             "case <some=0> as MaybeNat of <some=x> => <some=succ x> as MaybeNat | <none=x> => <none=x> as MaybeNat",
-            expect![[r#"<some=succ 0> as MaybeNat"#]],
+            expect![[r#"<some=1> as MaybeNat"#]],
             &mut env
         , &mut tyenv);
 
@@ -1262,6 +1282,17 @@ mod tests {
                     else iseven (pred (pred x))
                 in iseven 7"#,
             expect![[r#"false"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            r#"letrec sum: Nat → Nat → Nat =
+                λa:Nat.λb:Nat.
+                    if iszero a then b
+                    else sum (pred a) (succ b);
+                sum 10 10"#,
+            expect![[r#"20"#]],
             &mut env,
             &mut tyenv,
         );
