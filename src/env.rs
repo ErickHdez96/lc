@@ -241,12 +241,12 @@ fn base_env_() -> Result<Env<'static>> {
     let mut ty_env = TyEnv::new();
 
     macro_rules! p {
-        ($name:expr, $input:expr, $env:expr, $tyenv:expr) => {
+        ($name:expr, $input:expr, $env:expr, $tyenv:expr) => {{
             let t = parse($input, &mut $env)?;
             let ty = type_of(&t, &mut $env, &mut $tyenv)?;
             $env.insert_term($name, &t)?;
             $env.insert_type($name, &ty)?;
-        };
+        }};
     }
 
     p!("not", "λb:Bool.if b then false else true", env, ty_env);

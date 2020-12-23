@@ -32,59 +32,50 @@ pub enum TokenKind {
     #[regex(r"\s+", logos::skip)]
     Whitespace,
 
-    #[regex(r"λ|\\")]
-    Lambda,
-
     #[token("true")]
     True,
-
     #[token("false")]
     False,
-
     #[token("if")]
     If,
-
     #[token("then")]
     Then,
-
     #[token("else")]
     Else,
-
     #[token("succ")]
     Succ,
-
     #[token("pred")]
     Pred,
-
     #[token("iszero")]
     IsZero,
-
     #[token("unit")]
     Unit,
-
     #[token("as")]
     As,
-
     #[token("let")]
     Let,
-
     #[token("in")]
     In,
-
     #[token("type")]
     Type,
-
     #[token("case")]
     Case,
-
     #[token("of")]
     Of,
-
     #[token("fix")]
     Fix,
-
     #[token("letrec")]
     Letrec,
+    #[token("nil")]
+    Nil,
+    #[token("cons")]
+    Cons,
+    #[token("isnil")]
+    IsNil,
+    #[token("head")]
+    Head,
+    #[token("tail")]
+    Tail,
 
     #[regex("[0-9]+")]
     Number,
@@ -94,46 +85,39 @@ pub enum TokenKind {
 
     #[token(".")]
     Period,
-
     #[token(",")]
     Comma,
-
     #[token("(")]
     LParen,
-
     #[token(")")]
     RParen,
-
     #[token("{")]
     LBrace,
-
     #[token("}")]
     RBrace,
-
+    #[token("[")]
+    LBracket,
+    #[token("]")]
+    RBracket,
     #[token("<")]
     Lt,
-
     #[token(">")]
     Gt,
-
     #[token(";")]
     Semicolon,
-
     #[token(":")]
     Colon,
 
+    #[regex(r"λ|\\")]
+    Lambda,
     #[regex("(→|->)")]
     Arrow,
-
     #[regex("(=>|⇒)")]
     FatArrow,
-
     #[token("=")]
     Assign,
-
     #[token("|")]
     Pipe,
-
     #[regex("_")]
     Wildcard,
 
@@ -165,6 +149,11 @@ impl TokenKind {
                 | TokenKind::Lt
                 | TokenKind::Fix
                 | TokenKind::Letrec
+                | TokenKind::Nil
+                | TokenKind::Cons
+                | TokenKind::IsNil
+                | TokenKind::Head
+                | TokenKind::Tail
         )
     }
 
@@ -209,6 +198,8 @@ impl std::fmt::Display for TokenKind {
                 RParen => ")",
                 LBrace => "{",
                 RBrace => "}",
+                LBracket => "[",
+                RBracket => "]",
                 Lt => "<",
                 Gt => ">",
                 Semicolon => ";",
@@ -228,6 +219,11 @@ impl std::fmt::Display for TokenKind {
                 IsZero => "iszero",
                 Fix => "fix",
                 Letrec => "letrec",
+                Nil => "nil",
+                Cons => "cons",
+                IsNil => "isnil",
+                Head => "head",
+                Tail => "tail",
                 Number => "<number>",
                 Error => "<unknown char>",
                 Eof => "<eof>",
@@ -302,6 +298,8 @@ mod tests {
         check(")", vec![RParen]);
         check("{", vec![LBrace]);
         check("}", vec![RBrace]);
+        check("[", vec![LBracket]);
+        check("]", vec![RBracket]);
         check("<", vec![Lt]);
         check(">", vec![Gt]);
         check(";", vec![Semicolon]);

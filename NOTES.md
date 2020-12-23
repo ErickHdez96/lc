@@ -22,6 +22,11 @@ t ::=                   terms:
     case t of
       <lᵢ=xᵢ>=>tᵢ (i∈1..n)      case
     fix t                       fixed point of t
+    nil[T]                      empty list
+    cons[T] t t                 list constructor
+    isnil[T] t                  test for empty list
+    head[T] t                   head of a list
+    tail[T] t                   tail of a list
 
 v ::=                   values:
     λx:T.t                      abstraction value
@@ -30,6 +35,8 @@ v ::=                   values:
     nv                          numeric value
     unit                        constant unit
     { lᵢ=vᵢ (i∈1..n) }          record value
+    nil[T]                      empty list
+    cons[T] v v                 list constructor
 
 nv ::=                  numeric values:
     0                           zero value
@@ -47,6 +54,7 @@ T ::=                   types:
     Unit                        unit type
     { lᵢ:Tᵢ (i∈1..n) }          type of records
     <lᵢ:Tᵢ (i∈1..n)>            type of variants
+    List T                      type of lists
 
 Γ ::=                   contexts:
     ∅                           empty context
@@ -140,6 +148,34 @@ fix (λx:T₁.t₂) →
     t₁ → t′₁
 ----------------                        E-Fix
 fix t₁ → fix t′₁
+
+           t₁ → t′₁
+------------------------------          E-Cons1
+cons[T] t₁ t₂ → cons[T] t′₁ t₂
+
+           t₂ → t′₂
+------------------------------          E-Cons2
+cons[T] t₁ t₂ → cons[T] t₁ t′₂
+
+isnil[S] (nil[T]) → true                E-IsnilNil
+
+isnil[S] (cons[T] v₁ v₂) → false        E-IsnilCons
+
+         t₁ → t′₁
+--------------------------              E-Isnil
+isnil[T] t₁ → isnil[T] t′₁
+
+head[S] (cons[T] v₁ v₂) → v₁            E-HeadCons
+
+        t₁ → t′₁
+------------------------                E-Head
+head[T] t₁ → head[T] t′₁
+
+tail[S] (cons[T] v₁ v₂) → v₂            E-TailCons
+
+        t₁ → t′₁
+------------------------                E-Tail
+tail[T] t₁ → tail[T] t′₁
 ```
 
 ## Typing
@@ -212,6 +248,24 @@ iszero t₁ : Bool
 Γ ⊢ t₁ : T₁ → T₁
 ----------------                        T-Fix
  Γ ⊢ fix t₁ : T₁
+
+Γ ⊢ nil [T₁] : List T₁                  T-Nil
+
+Γ ⊢ t₁ : T₁     Γ ⊢ t₂ : List T₁
+--------------------------------        T-Cons
+  Γ ⊢ cons[T₁] t₁ t₂ : List T₁
+
+    Γ ⊢ t₁ : List T₁₁
+------------------------                T-Isnil
+Γ ⊢ isnil[T₁₁] t₁ : Bool
+
+   Γ ⊢ t₂ : List T₁₁
+----------------------                  T-Head
+Γ ⊢ head[T₁₁] t₁ : T₁₁
+
+   Γ ⊢ t₂ : List T₁₁
+----------------------                  T-Tail
+Γ ⊢ tail[T₁₁] t₁ : T₁₁
 ```
 
 ## Derived forms

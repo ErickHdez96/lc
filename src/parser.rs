@@ -143,7 +143,9 @@ impl<'a> Parser<'a> {
             | TokenKind::FatArrow
             | TokenKind::Of
             | TokenKind::Pipe
-            | TokenKind::Semicolon => {
+            | TokenKind::Semicolon
+            | TokenKind::LBracket
+            | TokenKind::RBracket => {
                 let t = self.next();
                 Err(error!("Expected a term, got `{}`", t; t.span))
             }
@@ -308,6 +310,66 @@ impl<'a> Parser<'a> {
                         ),
                     }))
                 }
+            }
+            TokenKind::Nil => {
+                let start = self.current_span();
+                self.bump();
+                self.eat(TokenKind::LBracket)?;
+                let ty = self.parse_type(env)?;
+                let end = self.eat(TokenKind::RBracket)?.span;
+                Ok(Rc::new(Term {
+                    span: start.with_hi(end.hi),
+                    kind: TermKind::Nil(ty),
+                }))
+            }
+            TokenKind::Cons => {
+                let start = self.current_span();
+                self.bump();
+                self.eat(TokenKind::LBracket)?;
+                let ty = self.parse_type(env)?;
+                self.eat(TokenKind::RBracket)?;
+                let t1 = self.parse_term(env)?;
+                let t2 = self.parse_term(env)?;
+                Ok(Rc::new(Term {
+                    span: start.with_hi(t2.span.hi),
+                    kind: TermKind::Cons(t1, t2, ty),
+                }))
+            }
+            TokenKind::IsNil => {
+                let start = self.current_span();
+                self.bump();
+                self.eat(TokenKind::LBracket)?;
+                let ty = self.parse_type(env)?;
+                self.eat(TokenKind::RBracket)?;
+                let t = self.parse_term(env)?;
+                Ok(Rc::new(Term {
+                    span: start.with_hi(t.span.hi),
+                    kind: TermKind::IsNil(t, ty),
+                }))
+            }
+            TokenKind::Head => {
+                let start = self.current_span();
+                self.bump();
+                self.eat(TokenKind::LBracket)?;
+                let ty = self.parse_type(env)?;
+                self.eat(TokenKind::RBracket)?;
+                let t = self.parse_term(env)?;
+                Ok(Rc::new(Term {
+                    span: start.with_hi(t.span.hi),
+                    kind: TermKind::Head(t, ty),
+                }))
+            }
+            TokenKind::Tail => {
+                let start = self.current_span();
+                self.bump();
+                self.eat(TokenKind::LBracket)?;
+                let ty = self.parse_type(env)?;
+                self.eat(TokenKind::RBracket)?;
+                let t = self.parse_term(env)?;
+                Ok(Rc::new(Term {
+                    span: start.with_hi(t.span.hi),
+                    kind: TermKind::Tail(t, ty),
+                }))
             }
         }
     }
@@ -510,6 +572,14 @@ impl<'a> Parser<'a> {
                     kind: TyKind::Unit,
                     span: t.span,
                 }),
+                t if t.text == "List" => {
+                    let span = t.span;
+                    let inner_ty = self.parse_type(env)?;
+                    Rc::new(Ty {
+                        kind: TyKind::List(inner_ty),
+                        span,
+                    })
+                }
                 t => Rc::new(Ty {
                     kind: TyKind::Base(t.text.into()),
                     span: t.span,
@@ -1236,5 +1306,22 @@ mod tests {
                 r#"let iseven = fix λiseven':Nat → Bool.λx:Nat.if iszero x then true else if iszero pred x then false else iseven' pred pred x; iseven 7"#
             ]],
         );
+    }
+
+    #[test]
+    fn parse_lists() {
+        check_stringify("nil[Bool]", expect![[r#"nil[Bool]"#]]);
+        check_stringify(
+            "cons[Bool] true (cons[Bool] false nil[Bool])",
+            expect![[r#"cons[Bool] true cons[Bool] false nil[Bool]"#]],
+        );
+        check_stringify(
+            "isnil[Bool] nil[Bool]",
+            expect![[r#"isnil[Bool] nil[Bool]"#]],
+        );
+        check_stringify("head[Bool] nil[Bool]", expect![[r#"head[Bool] nil[Bool]"#]]);
+        check_stringify("tail[Bool] nil[Bool]", expect![[r#"tail[Bool] nil[Bool]"#]]);
+        check_stringify("λl:List Nat.l", expect![[r#"λl:List Nat.l"#]]);
+        check_stringify("λf:List Nat → Nat.f", expect![[r#"λf:List Nat → Nat.f"#]]);
     }
 }

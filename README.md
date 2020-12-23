@@ -148,5 +148,5 @@ false : Bool
 ## TODO
 
 * Add better error messages
-* General Recursion
-* Lists
+* References
+* Exceptions

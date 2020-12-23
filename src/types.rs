@@ -20,16 +20,10 @@ macro_rules! error {
 ///     Unit    unit type
 ///     T → T   type of functions
 /// ```
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ty {
     pub span: Span,
     pub kind: TyKind,
-}
-
-impl PartialEq for Ty {
-    fn eq(&self, other: &Self) -> bool {
-        self.kind == other.kind
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +45,7 @@ pub enum TyKind {
     ),
     /// <lᵢ:Tᵢ>
     Variant(HashMap<Symbol, LTy>, Vec<Symbol>),
+    List(LTy),
 }
 
 pub type LTy = Rc<Ty>;
@@ -59,11 +54,19 @@ impl Ty {
     pub fn is_abstraction(&self) -> bool {
         matches!(self.kind, TyKind::Abstraction(_, _))
     }
+
+    pub fn is_list(&self) -> bool {
+        matches!(self.kind, TyKind::List(_))
+    }
 }
 
 impl TyKind {
     pub fn is_abstraction(&self) -> bool {
         matches!(self, TyKind::Abstraction(_, _))
+    }
+
+    pub fn is_list(&self) -> bool {
+        matches!(self, TyKind::List(_))
     }
 }
 
@@ -84,19 +87,19 @@ impl fmt::Display for TyKind {
         }
 
         match self {
-            Self::Bool => write!(f, "Bool"),
-            Self::Nat => write!(f, "Nat"),
-            Self::Base(s) => s.fmt(f),
-            Self::Unit => write!(f, "Unit"),
-            Self::Abstraction(t1, t2) => {
-                let (l_paren, r_paren) = if t1.is_abstraction() {
+            TyKind::Bool => write!(f, "Bool"),
+            TyKind::Nat => write!(f, "Nat"),
+            TyKind::Base(s) => s.fmt(f),
+            TyKind::Unit => write!(f, "Unit"),
+            TyKind::Abstraction(t1, t2) => {
+                let (l_paren, r_paren) = if t1.is_abstraction() | t1.is_list() {
                     ("(", ")")
                 } else {
                     ("", "")
                 };
                 write!(f, "{}{}{} → {}", l_paren, t1, r_paren, t2)
             }
-            Self::Record(elems, keys) => {
+            TyKind::Record(elems, keys) => {
                 write!(
                     f,
                     "{{{}}}",
@@ -107,7 +110,7 @@ impl fmt::Display for TyKind {
                         .join(", ")
                 )
             }
-            Self::Variant(variants, keys) => {
+            TyKind::Variant(variants, keys) => {
                 write!(
                     f,
                     "<{}>",
@@ -118,6 +121,7 @@ impl fmt::Display for TyKind {
                         .join(", "),
                 )
             }
+            TyKind::List(ty) => write!(f, "List {}", ty),
         }
     }
 }
@@ -310,6 +314,55 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                 _ => Err(error!("Fix expects an abstraction, got `{}`", t_ty; type_t.span)),
             }
         }
+        TermKind::Nil(ref ty) => Ok(Rc::new(Ty {
+            span: type_t.span,
+            kind: TyKind::List(Rc::clone(ty)),
+        })),
+        TermKind::Cons(ref t1, ref t2, ref ty) => {
+            let t1_ty = type_of(t1, env, tyenv)?;
+            let t2_ty = type_of(t2, env, tyenv)?;
+
+            if !cmp_ty(&t1_ty.kind, &ty.kind, tyenv) {
+                return Err(error!("Expected type `{}`, got `{}", ty, t1_ty; t1.span));
+            }
+
+            match &t2_ty.kind {
+                TyKind::List(t2_ty) if cmp_ty(&t2_ty.kind, &ty.kind, tyenv) => Ok(Rc::new(Ty {
+                    span: type_t.span,
+                    kind: TyKind::List(Rc::clone(ty)),
+                })),
+                t2_ty => Err(error!("Expected type `List {}`, got `{}`", ty, t2_ty; t2.span)),
+            }
+        }
+        TermKind::IsNil(ref t, ref ty) => {
+            let t_ty = type_of(t, env, tyenv)?;
+
+            match &t_ty.kind {
+                TyKind::List(t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => {
+                    Ok(TY![bool; type_t.span])
+                }
+                _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.span)),
+            }
+        }
+        TermKind::Head(ref t, ref ty) => {
+            let t_ty = type_of(t, env, tyenv)?;
+
+            match &t_ty.kind {
+                TyKind::List(t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => Ok(Rc::clone(ty)),
+                _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.span)),
+            }
+        }
+        TermKind::Tail(ref t, ref ty) => {
+            let t_ty = type_of(t, env, tyenv)?;
+
+            match &t_ty.kind {
+                TyKind::List(t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => Ok(Rc::new(Ty {
+                    span: type_t.span,
+                    kind: TyKind::List(Rc::clone(ty)),
+                })),
+                _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.span)),
+            }
+        }
     }
 }
 
@@ -322,6 +375,7 @@ pub fn eval_ty(t1: &LTy, tyenv: &TyEnv) -> LTy {
         _ => Rc::clone(t1),
     }
 }
+
 pub fn cmp_ty<'a>(t1: &'a TyKind, t2: &'a TyKind, tyenv: &TyEnv) -> bool {
     match (t1, t2) {
         (TyKind::Bool, TyKind::Bool) => true,
@@ -348,6 +402,7 @@ pub fn cmp_ty<'a>(t1: &'a TyKind, t2: &'a TyKind, tyenv: &TyEnv) -> bool {
             }
             true
         }
+        (TyKind::List(ref t1), TyKind::List(ref t2)) => cmp_ty(&t1.kind, &t2.kind, tyenv),
         (TyKind::Base(s1), TyKind::Base(s2)) if s1 == s2 => true,
         (TyKind::Base(s1), TyKind::Base(s2)) => {
             let s1 = tyenv.get(*s1);
@@ -1021,10 +1076,7 @@ mod tests {
 
     #[test]
     fn typecheck_letrec() {
-        let mut env = Env::new();
-        let mut tyenv = TyEnv::new();
-
-        check_env(
+        check(
             r#"letrec iseven: Nat → Bool =
                 λx:Nat.
                     if iszero x then true
@@ -1032,8 +1084,47 @@ mod tests {
                     else iseven (pred (pred x))
                 in iseven 7"#,
             expect![[r#"Bool"#]],
-            &mut env,
-            &mut tyenv,
+        );
+    }
+
+    #[test]
+    fn typecheck_list() {
+        check("nil[Bool]", expect![["List Bool"]]);
+        check("cons[Bool] true nil[Bool]", expect![["List Bool"]]);
+        check("isnil[Nat] nil[Nat]", expect![["Bool"]]);
+        check("head[Nat] nil[Nat]", expect![["Nat"]]);
+        check("tail[Nat] nil[Nat]", expect![["List Nat"]]);
+    }
+
+    #[test]
+    fn error_typecheck_list() {
+        check_parse_error(
+            "cons[Bool] 0 nil[Bool]",
+            expect![[r#"[11-12]TypeError: Expected type `Bool`, got `Nat"#]],
+        );
+        check_parse_error(
+            "cons[Bool] true true",
+            expect![[r#"[16-20]TypeError: Expected type `List Bool`, got `Bool`"#]],
+        );
+        check_parse_error(
+            "cons[Bool] true nil[Nat]",
+            expect![[r#"[16-24]TypeError: Expected type `List Bool`, got `List Nat`"#]],
+        );
+        check_parse_error(
+            "cons[Bool] true nil[Nat]",
+            expect![[r#"[16-24]TypeError: Expected type `List Bool`, got `List Nat`"#]],
+        );
+        check_parse_error(
+            "isnil[Bool] true",
+            expect![[r#"[12-16]TypeError: Expected type `List Bool`, got `Bool"#]],
+        );
+        check_parse_error(
+            "isnil[Bool] nil[Nat]",
+            expect![[r#"[12-20]TypeError: Expected type `List Bool`, got `List Nat"#]],
+        );
+        check_parse_error(
+            "(λl:List Bool.head[Bool]l)λl:List Nat.head[Nat] l",
+            expect![[r#"[27-51]TypeError: Expected type `List Bool`, got `(List Nat) → Nat`"#]],
         );
     }
 }
