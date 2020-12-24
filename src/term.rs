@@ -73,7 +73,7 @@ use crate::{
     env::{Env, TyEnv},
     types::type_of,
 };
-use std::{collections::HashMap, convert::TryFrom};
+use std::{cell::RefCell, collections::HashMap, convert::TryFrom};
 use std::{fmt, rc::Rc};
 
 type Result<T> = std::result::Result<T, Error>;
@@ -115,7 +115,7 @@ impl PartialEq for Term {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermKind {
     /// x
     Variable(/** de Bruijn index */ usize),
@@ -168,16 +168,20 @@ pub enum TermKind {
     IsNil(LTerm, LTy),
     Head(LTerm, LTy),
     Tail(LTerm, LTy),
+    Ref(LTerm),
+    Deref(LTerm),
+    RefAssign(LTerm, LTerm),
+    Location(RefCell<LTerm>),
 }
 
 pub type CaseBranches = HashMap<Symbol, (Symbol, LTerm)>;
 
-pub type LTerm = Rc<Term>;
+pub type LTerm = Rc<RefCell<Term>>;
 
 impl Term {
     pub fn is_definition(&self) -> bool {
         match &self.kind {
-            TermKind::Application(_, ref t2) => t2.is_definition(),
+            TermKind::Application(_, ref t2) => t2.borrow().is_definition(),
             TermKind::VariableDefinition(_, _) | TermKind::TypeDefinition(_, _) => true,
             _ => false,
         }
@@ -199,11 +203,11 @@ pub fn eval(t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTerm> {
 
 // See NOTES.md for the evaluation rules
 fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
-    match eval_t.as_ref().kind {
+    match eval_t.borrow().kind {
         TermKind::Application(ref t1, ref t2) => {
             // If t1 is `let x = t;` or `type A = T;`, we can ignore the result
             // of evaluating it (i.e. unit) and just return `t2`.
-            let ignore_t1 = t1.is_definition();
+            let ignore_t1 = t1.borrow().is_definition();
             //    t1 → t1'
             // --------------
             // t1 t2 → t1' t2
@@ -217,7 +221,8 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
             // We evaluate t2
             // E-App2
             let v2 = eval_(t2, env)?;
-            match v1.as_ref().kind {
+            let v1b = v1.borrow();
+            match v1b.kind {
                 // E-AppAbs
                 // (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)
                 TermKind::Abstraction(_, _, ref body) => eval_(&term_subst_top(&v2, &body)?, env),
@@ -225,24 +230,25 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
                 _ => Err(error!(
                     "Expected an abstraction, got {}",
                     term_to_string(t1, &env)?;
-                    v1.span
+                    v1.borrow().span
                 )),
             }
         }
         TermKind::Variable(idx) => env
             .get_term_from_index(idx)
-            .ok_or_else(|| error!("Invalid de Bruijn index: {}", idx; eval_t.span)),
+            .ok_or_else(|| error!("Invalid de Bruijn index: {}", idx; eval_t.borrow().span)),
         // Evaluating an abstraction, yields the abstraction itself.
         TermKind::If(ref cond, ref then, ref else_b) => {
             let cond = eval_(cond, env)?;
 
-            match cond.as_ref().kind {
+            let cb = cond.borrow();
+            match cb.kind {
                 TermKind::True => eval_(then, env),
                 TermKind::False => eval_(else_b, env),
                 _ => Err(error!(
                     "Expected a boolean, got `{}`",
                     term_to_string(&cond, &env)?;
-                    cond.span
+                    cond.borrow().span
                 )),
             }
         }
@@ -251,32 +257,35 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
         | TermKind::False
         | TermKind::Zero
         | TermKind::Unit
-        | TermKind::Nil(_) => Ok(Rc::clone(eval_t)),
+        | TermKind::Nil(_)
+        | TermKind::Location(_) => Ok(Rc::clone(eval_t)),
         TermKind::Succ(ref t) => {
             let t = eval_(t, env)?;
-            Ok(T![succ t; eval_t.span])
+            Ok(T![succ t; eval_t.borrow().span])
         }
         TermKind::Pred(ref t) => {
             let t = eval_(t, env)?;
-            match t.as_ref().kind {
-                TermKind::Zero => Ok(T![0; eval_t.span]),
+            let tb = t.borrow();
+            match tb.kind {
+                TermKind::Zero => Ok(T![0; eval_t.borrow().span]),
                 TermKind::Succ(ref t) => Ok(Rc::clone(t)),
                 _ => Err(error!(
                     "Expected a numeric value, got `{}`",
                     term_to_string(&t, &env)?;
-                    t.span
+                    t.borrow().span
                 )),
             }
         }
         TermKind::IsZero(ref t) => {
             let t = eval_(t, env)?;
-            match t.as_ref().kind {
-                TermKind::Zero => Ok(T![true; eval_t.span]),
-                TermKind::Succ(_) => Ok(T![false; eval_t.span]),
+            let tb = t.borrow();
+            match tb.kind {
+                TermKind::Zero => Ok(T![true; eval_t.borrow().span]),
+                TermKind::Succ(_) => Ok(T![false; eval_t.borrow().span]),
                 _ => Err(error!(
                     "Expected a numeric value, got `{}`",
                     term_to_string(&t, &env)?;
-                    t.span
+                    t.borrow().span
                 )),
             }
         }
@@ -292,101 +301,140 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
             .map(|k| eval_(elems.get(&k).unwrap(), env).map(|e| (k, e)))
             .collect::<Result<HashMap<_, _>>>()
             .map(|elems| {
-                Rc::new(Term {
+                Rc::new(RefCell::new(Term {
                     kind: TermKind::Record(elems, keys.clone()),
-                    span: eval_t.span,
-                })
+                    span: eval_t.borrow().span,
+                }))
             }),
         TermKind::Projection(ref t, i) => {
             let t = eval_(t, env)?;
             if i.as_str() == "0" {
                 return Err(error!(
-                    "Cannot access a record with `0`, projections start from `1`"; eval_t.span
+                    "Cannot access a record with `0`, projections start from `1`"; eval_t.borrow().span
                 ));
             }
-            match t.as_ref().kind {
+            let tb = t.borrow();
+            match tb.kind {
                 TermKind::Record(ref elems, _) => match elems.get(&i) {
                     Some(e) => Ok(Rc::clone(e)),
-                    None => Err(error!("Couldn't get element `{}` from record", i; eval_t.span)),
+                    None => Err(
+                        error!("Couldn't get element `{}` from record", i; eval_t.borrow().span),
+                    ),
                 },
-                _ => Err(error!("Projections can only be done over records"; eval_t.span)),
+                _ => Err(error!("Projections can only be done over records"; eval_t.borrow().span)),
             }
         }
         TermKind::VariableDefinition(ref p, ref t) => {
             let t = eval_(t, env)?;
             resolve_match_mut(p, &t, env)?;
-            Ok(T![unit; eval_t.span])
+            Ok(T![unit; eval_t.borrow().span])
         }
-        TermKind::TypeDefinition(_, _) => Ok(T![unit; eval_t.span]),
+        TermKind::TypeDefinition(_, _) => Ok(T![unit; eval_t.borrow().span]),
         TermKind::Variant(label, ref term, ref ty) => {
             let term = eval_(term, env)?;
-            Ok(T![variant label, term, ty; eval_t.span])
+            Ok(T![variant label, term, ty; eval_t.borrow().span])
         }
         TermKind::Case(ref term, ref branches, _) => {
             let term = eval_(term, env)?;
-            let (variant, term) = if let TermKind::Variant(label, ref t, _) = term.kind {
+            let tb = term.borrow();
+            let (variant, term) = if let TermKind::Variant(label, ref t, _) = tb.kind {
                 (label, t)
             } else {
                 return Err(
-                    error!("There was an error during type checking, expected a variant"; term.span),
+                    error!("There was an error during type checking, expected a variant"; term.borrow().span),
                 );
             };
 
             match branches.get(&variant) {
                 Some((_, body)) => eval_(&term_subst_top(term, body)?, env),
-                None => {
-                    Err(error!("There was an error during type checking, invalid label"; term.span))
-                }
+                None => Err(
+                    error!("There was an error during type checking, invalid label"; term.borrow().span),
+                ),
             }
         }
         TermKind::Fix(ref t) => {
             let t = eval_(t, env)?;
 
-            match &t.kind {
+            let tb = t.borrow();
+            match &tb.kind {
                 TermKind::Abstraction(_, _, t2) => {
-                    let t = Rc::new(Term {
-                        span: eval_t.span,
+                    let t = Rc::new(RefCell::new(Term {
+                        span: eval_t.borrow().span,
                         kind: TermKind::Fix(Rc::clone(&t)),
-                    });
+                    }));
                     eval_(&term_subst_top(&t, t2)?, env)
                 }
                 _ => Err(
-                    error!("Fix expects an abstraction, got `{}`", term_to_string(&t, env)?; eval_t.span),
+                    error!("Fix expects an abstraction, got `{}`", term_to_string(&t, env)?; eval_t.borrow().span),
                 ),
             }
         }
         TermKind::Cons(ref t1, ref t2, ref ty) => {
             let v1 = eval_(t1, env)?;
             let v2 = eval_(t2, env)?;
-            Ok(Rc::new(Term {
-                span: eval_t.span,
+            Ok(Rc::new(RefCell::new(Term {
+                span: eval_t.borrow().span,
                 kind: TermKind::Cons(v1, v2, Rc::clone(ty)),
-            }))
+            })))
         }
         TermKind::IsNil(ref t, _) => {
             let v = eval_(t, env)?;
-            Ok(Rc::new(Term {
-                span: eval_t.span,
-                kind: if matches!(&v.kind, TermKind::Nil(_)) {
+            Ok(Rc::new(RefCell::new(Term {
+                span: eval_t.borrow().span,
+                kind: if matches!(&v.borrow().kind, TermKind::Nil(_)) {
                     TermKind::True
                 } else {
                     TermKind::False
                 },
-            }))
+            })))
         }
         TermKind::Head(ref t, _) => {
             let v = eval_(t, env)?;
 
-            match &v.kind {
+            let vb = v.borrow();
+            match &vb.kind {
                 TermKind::Cons(ref h, _, _) => Ok(Rc::clone(h)),
-                _ => Err(error!("Tried to get the head of an empty list"; eval_t.span)),
+                _ => Err(error!("Tried to get the head of an empty list"; eval_t.borrow().span)),
             }
         }
         TermKind::Tail(ref t, _) => {
             let v = eval_(t, env)?;
-            match &v.kind {
+            let vb = v.borrow();
+            match &vb.kind {
                 TermKind::Cons(_, ref t, _) => Ok(Rc::clone(t)),
-                _ => Err(error!("Tried to get the tail of an empty list"; eval_t.span)),
+                _ => Err(error!("Tried to get the tail of an empty list"; eval_t.borrow().span)),
+            }
+        }
+        TermKind::Ref(ref t) => {
+            let t = eval_(t, env)?;
+            Ok(Rc::new(RefCell::new(Term {
+                span: eval_t.borrow().span,
+                kind: TermKind::Location(RefCell::new(t)),
+            })))
+        }
+        TermKind::Deref(ref t) => {
+            let t = eval_(t, env)?;
+            let tb = t.borrow();
+            match tb.kind {
+                TermKind::Location(ref t) => Ok(Rc::clone(&t.borrow())),
+                _ => Err(
+                    error!("Cannot dereference `{}`", term_to_string(&t, env)?; eval_t.borrow().span),
+                ),
+            }
+        }
+        TermKind::RefAssign(ref t1, ref t2) => {
+            let t1 = eval_(t1, env)?;
+            let t2 = eval_(t2, env)?;
+
+            let t1b = t1.borrow();
+            match t1b.kind {
+                TermKind::Location(ref t) => {
+                    *t.borrow_mut() = t2;
+                    Ok(T![unit; eval_t.borrow().span])
+                }
+                _ => Err(
+                    error!("Cannot assign to `{}`", term_to_string(&t1, env)?; eval_t.borrow().span),
+                ),
             }
         }
     }
@@ -420,7 +468,7 @@ fn term_subst_top_pattern(v2: &LTerm, p: &Pattern, t12: &LTerm) -> Result<LTerm>
             // So we substitute the current variable with the current term.
             shift(&substitute(t12, 0, &shift(&v2, 1)?)?, -1)
         }
-        Pattern::Record(recs, keys) => match v2.as_ref().kind {
+        Pattern::Record(recs, keys) => match v2.borrow().kind {
             // If we find a record, we iterate over the keys from left to right,
             // in the order they were introduced to the environment.
             // The leftmost variable we can find will always have de Bruijn index 0.
@@ -444,7 +492,7 @@ fn term_subst_top_pattern(v2: &LTerm, p: &Pattern, t12: &LTerm) -> Result<LTerm>
                         }
                         None => {
                             return Err(
-                                error!("The key `{}` does not exist in the record", key; t12.span),
+                                error!("The key `{}` does not exist in the record", key; t12.borrow().span),
                             );
                         }
                     }
@@ -452,7 +500,7 @@ fn term_subst_top_pattern(v2: &LTerm, p: &Pattern, t12: &LTerm) -> Result<LTerm>
 
                 Ok(t12)
             }
-            _ => Err(error!("Only records can be pattern matched"; t12.span)),
+            _ => Err(error!("Only records can be pattern matched"; t12.borrow().span)),
         },
     }
 }
@@ -469,7 +517,7 @@ fn resolve_match_mut(p: &Pattern, t: &LTerm, mut env: &mut Env) -> Result<()> {
             env.insert_term(*s, t)?;
             Ok(())
         }
-        Pattern::Record(recs, keys) => match t.as_ref().kind {
+        Pattern::Record(recs, keys) => match t.borrow().kind {
             TermKind::Record(ref trecs, ref tkeys) => {
                 for (i, key) in keys.iter().copied().enumerate() {
                     // The keys must be in the same order
@@ -483,19 +531,19 @@ fn resolve_match_mut(p: &Pattern, t: &LTerm, mut env: &mut Env) -> Result<()> {
                         }
                         Some(_) => {
                             return Err(
-                                error!("Match keys must follow the same order as the record"; t.span),
+                                error!("Match keys must follow the same order as the record"; t.borrow().span),
                             );
                         }
                         None => {
                             return Err(
-                                error!("The key `{}` does not exist in the record", key; t.span),
+                                error!("The key `{}` does not exist in the record", key; t.borrow().span),
                             );
                         }
                     }
                 }
                 Ok(())
             }
-            _ => Err(error!("Only records can be pattern matched"; t.span)),
+            _ => Err(error!("Only records can be pattern matched"; t.borrow().span)),
         },
     }
 }
@@ -519,10 +567,10 @@ fn substitute(t: &LTerm, db_idx: usize, arg: &LTerm) -> Result<LTerm> {
         if idx == c + db_idx {
             shift(
                 &arg,
-                isize::try_from(c).map_err(|_| error!("Too many bindings"; t.span))?,
+                isize::try_from(c).map_err(|_| error!("Too many bindings"; t.borrow().span))?,
             )
         } else {
-            Ok(T![var idx; t.span])
+            Ok(T![var idx; t.borrow().span])
         }
     })
 }
@@ -539,13 +587,15 @@ fn substitute(t: &LTerm, db_idx: usize, arg: &LTerm) -> Result<LTerm> {
 fn shift_above(t: &LTerm, d_place: isize, cutoff: usize) -> Result<LTerm> {
     term_map(t, cutoff, |idx, c| {
         Ok(if idx >= c {
-            let idx =
-                isize::try_from(idx).map_err(|_| error!("Too many bindings"; t.span))? + d_place;
-            let new_idx = usize::try_from(idx)
-                .map_err(|_| error!("Invalid negative de Bruijn index calculated"; t.span))?;
-            T![var new_idx; t.span]
+            let idx = isize::try_from(idx)
+                .map_err(|_| error!("Too many bindings"; t.borrow().span))?
+                + d_place;
+            let new_idx = usize::try_from(idx).map_err(
+                |_| error!("Invalid negative de Bruijn index calculated"; t.borrow().span),
+            )?;
+            T![var new_idx; t.borrow().span]
         } else {
-            T![var idx; t.span]
+            T![var idx; t.borrow().span]
         })
     })
 }
@@ -563,51 +613,55 @@ where
         cutoff: usize,
         on_var: &F,
     ) -> Result<LTerm> {
-        match t.as_ref().kind {
+        match t.borrow().kind {
             TermKind::Variable(idx) => on_var(idx, cutoff),
             TermKind::Abstraction(v, ref ty, ref body) => {
-                Ok(T![abs(v), ty, map(body, cutoff + 1, on_var)?; t.span])
+                Ok(T![abs(v), ty, map(body, cutoff + 1, on_var)?; t.borrow().span])
             }
             TermKind::Application(ref t1, ref t2) => {
-                Ok(T![app map(t1, cutoff, on_var)?, map(t2, cutoff, on_var)?; t.span])
+                Ok(T![app map(t1, cutoff, on_var)?, map(t2, cutoff, on_var)?; t.borrow().span])
             }
             TermKind::True
             | TermKind::False
             | TermKind::Zero
             | TermKind::Unit
             | TermKind::Nil(_) => Ok(Rc::clone(t)),
-            TermKind::Succ(ref t) => Ok(T![succ map(t, cutoff, on_var)?; t.span]),
-            TermKind::Pred(ref t) => Ok(T![pred map(t, cutoff, on_var)?; t.span]),
-            TermKind::IsZero(ref t) => Ok(T![iszero map(t, cutoff, on_var)?; t.span]),
-            TermKind::Ascription(ref t, _) => Ok(T![iszero map(t, cutoff, on_var)?; t.span]),
+            TermKind::Succ(ref t) => Ok(T![succ map(t, cutoff, on_var)?; t.borrow().span]),
+            TermKind::Pred(ref t) => Ok(T![pred map(t, cutoff, on_var)?; t.borrow().span]),
+            TermKind::IsZero(ref t) => Ok(T![iszero map(t, cutoff, on_var)?; t.borrow().span]),
+            TermKind::Ascription(ref t, _) => {
+                Ok(T![iszero map(t, cutoff, on_var)?; t.borrow().span])
+            }
             TermKind::Record(ref elems, ref keys) => keys
                 .iter()
                 .cloned()
                 .map(|k| map(elems.get(&k).unwrap(), cutoff, on_var).map(|e| (k, e)))
                 .collect::<Result<HashMap<_, _>>>()
                 .map(|elems| {
-                    Rc::new(Term {
+                    Rc::new(RefCell::new(Term {
                         kind: TermKind::Record(elems, keys.clone()),
-                        span: t.span,
-                    })
+                        span: t.borrow().span,
+                    }))
                 }),
             TermKind::Let(ref p, ref t1, ref t2) => Ok(
-                T![let p.clone(), map(t1, cutoff, on_var)?, map(t2, cutoff + 1, on_var)?; t.span],
+                T![let p.clone(), map(t1, cutoff, on_var)?, map(t2, cutoff + 1, on_var)?; t.borrow().span],
             ),
             TermKind::If(ref cond, ref then, ref else_b) => Ok(T![if
                                                map(cond, cutoff, on_var)?,
                                                map(then, cutoff, on_var)?,
                                                map(else_b, cutoff, on_var)?;
-            t.span]),
-            TermKind::Projection(ref t, i) => Ok(T![proj map(t, cutoff, on_var)?, i; t.span]),
+            t.borrow().span]),
+            TermKind::Projection(ref t, i) => {
+                Ok(T![proj map(t, cutoff, on_var)?, i; t.borrow().span])
+            }
             TermKind::VariableDefinition(_, _) => {
-                Err(error!("A definition should not be mapped"; t.span))
+                Err(error!("A definition should not be mapped"; t.borrow().span))
             }
             TermKind::TypeDefinition(_, _) => {
-                Err(error!("A definition should not be mapped"; t.span))
+                Err(error!("A definition should not be mapped"; t.borrow().span))
             }
             TermKind::Variant(label, ref term, ref ty) => {
-                Ok(T![variant label, map(term, cutoff, on_var)?, ty; t.span])
+                Ok(T![variant label, map(term, cutoff, on_var)?, ty; t.borrow().span])
             }
             TermKind::Case(ref case_t, ref branches, ref symbols) => {
                 let case_t = map(case_t, cutoff, on_var)?;
@@ -620,54 +674,71 @@ where
                     })
                     .collect::<Result<HashMap<_, _>>>()
                     .map(|elems| {
-                        Rc::new(Term {
-                            span: t.span,
+                        Rc::new(RefCell::new(Term {
+                            span: t.borrow().span,
                             kind: TermKind::Case(case_t, elems, symbols.clone()),
-                        })
+                        }))
                     })
             }
-            TermKind::Fix(ref fft) => Ok(Rc::new(Term {
-                span: t.span,
+            TermKind::Fix(ref fft) => Ok(Rc::new(RefCell::new(Term {
+                span: t.borrow().span,
                 kind: TermKind::Fix(map(fft, cutoff, on_var)?),
-            })),
-            TermKind::Cons(ref t1, ref t2, ref ty) => Ok(Rc::new(Term {
-                span: t.span,
+            }))),
+            TermKind::Cons(ref t1, ref t2, ref ty) => Ok(Rc::new(RefCell::new(Term {
+                span: t.borrow().span,
                 kind: TermKind::Cons(
                     map(t1, cutoff, on_var)?,
                     map(t2, cutoff, on_var)?,
                     Rc::clone(ty),
                 ),
-            })),
-            TermKind::IsNil(ref l, ref ty) => Ok(Rc::new(Term {
-                span: t.span,
+            }))),
+            TermKind::IsNil(ref l, ref ty) => Ok(Rc::new(RefCell::new(Term {
+                span: t.borrow().span,
                 kind: TermKind::IsNil(map(l, cutoff, on_var)?, Rc::clone(ty)),
-            })),
-            TermKind::Head(ref l, ref ty) => Ok(Rc::new(Term {
-                span: t.span,
+            }))),
+            TermKind::Head(ref l, ref ty) => Ok(Rc::new(RefCell::new(Term {
+                span: t.borrow().span,
                 kind: TermKind::Head(map(l, cutoff, on_var)?, Rc::clone(ty)),
-            })),
-            TermKind::Tail(ref l, ref ty) => Ok(Rc::new(Term {
-                span: t.span,
+            }))),
+            TermKind::Tail(ref l, ref ty) => Ok(Rc::new(RefCell::new(Term {
+                span: t.borrow().span,
                 kind: TermKind::Tail(map(l, cutoff, on_var)?, Rc::clone(ty)),
-            })),
+            }))),
+            TermKind::Ref(ref td) => Ok(Rc::new(RefCell::new(Term {
+                span: t.borrow().span,
+                kind: TermKind::Ref(map(td, cutoff, on_var)?),
+            }))),
+            TermKind::Deref(ref td) => Ok(Rc::new(RefCell::new(Term {
+                span: t.borrow().span,
+                kind: TermKind::Deref(map(td, cutoff, on_var)?),
+            }))),
+            TermKind::RefAssign(ref t1, ref t2) => Ok(Rc::new(RefCell::new(Term {
+                span: t.borrow().span,
+                kind: TermKind::RefAssign(map(t1, cutoff, on_var)?, map(t2, cutoff, on_var)?),
+            }))),
+            TermKind::Location(ref td) => {
+                let mapped = map(&td.borrow(), cutoff, on_var)?;
+                *td.borrow_mut() = mapped;
+                Ok(Rc::clone(t))
+            }
         }
     }
     map(t, cutoff, &on_var)
 }
 
 pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
-    match t.as_ref().kind {
+    match t.borrow().kind {
         TermKind::Variable(idx) => match env.get_name_from_db_index(idx) {
             Some(v) => Ok(v.to_string()),
-            None => Err(error!("Invalid de Bruijn index: {}", idx; t.span)),
+            None => Err(error!("Invalid de Bruijn index: {}", idx; t.borrow().span)),
         },
         TermKind::Abstraction(param, ref ty, ref body) => {
             let (param, env) = new_name(param, &env);
             Ok(format!("λ{}:{}.{}", param, ty, term_to_string(body, &env)?))
         }
         TermKind::Application(ref t1, ref t2) => {
-            let t1_paren = matches!(t1.kind, TermKind::Abstraction(_, _, _));
-            let t2_paren = matches!(t2.kind, TermKind::Application(_, _));
+            let t1_paren = matches!(t1.borrow().kind, TermKind::Abstraction(_, _, _));
+            let t2_paren = matches!(t2.borrow().kind, TermKind::Application(_, _));
             let (t2_lp, t2_rp) = if t2_paren { ("(", ")") } else { ("", "") };
             let (t1_lp, t1_rp) = if t1_paren { ("(", ")") } else { ("", "") };
             Ok(format!(
@@ -687,11 +758,12 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
         TermKind::Pred(ref t) => Ok(format!("pred {}", term_to_string(t, &env)?)),
         TermKind::Succ(ref t) => {
             let mut n = 1u64;
-            let mut inner_t = t;
+            let mut inner_t = Rc::clone(t);
 
             loop {
-                match &inner_t.kind {
-                    TermKind::Succ(ref t) => {
+                let ib = inner_t.borrow().kind.clone();
+                match ib {
+                    TermKind::Succ(t) => {
                         n += 1;
                         inner_t = t;
                     }
@@ -780,6 +852,14 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
         }
         TermKind::Head(ref t, ref ty) => Ok(format!("head[{}] {}", ty, term_to_string(t, &env)?,)),
         TermKind::Tail(ref t, ref ty) => Ok(format!("tail[{}] {}", ty, term_to_string(t, &env)?,)),
+        TermKind::Ref(ref t) => Ok(format!("ref {}", term_to_string(t, &env)?)),
+        TermKind::Location(ref t) => Ok(format!("ref {}", term_to_string(&t.borrow(), &env)?)),
+        TermKind::Deref(ref t) => Ok(format!("!{}", term_to_string(t, &env)?)),
+        TermKind::RefAssign(ref t1, ref t2) => Ok(format!(
+            "{} := {}",
+            term_to_string(t1, &env)?,
+            term_to_string(t2, &env)?
+        )),
     }
 }
 
@@ -823,55 +903,55 @@ impl fmt::Display for Pattern {
 #[macro_export]
 macro_rules! T {
     (var $n:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Variable($n), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Variable($n), span: $span.into() }))
     };
     (abs $param:expr, $ty:expr, $body:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Abstraction($param.into(), $ty.clone(), $body.clone()), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Abstraction($param.into(), $ty.clone(), $body.clone()), span: $span.into() }))
     };
     (app $t1:expr, $t2:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Application($t1.clone(), $t2.clone()), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Application($t1.clone(), $t2.clone()), span: $span.into() }))
     };
     (asc $t:expr, $ty:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Ascription($t.clone(), $ty.clone()), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Ascription($t.clone(), $ty.clone()), span: $span.into() }))
     };
     (true; $span:expr) => {
-        Rc::new(Term { kind: TermKind::True, span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::True, span: $span.into() }))
     };
     (false; $span:expr) => {
-        Rc::new(Term { kind: TermKind::False, span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::False, span: $span.into() }))
     };
     (if $cond:expr, $then:expr, $else:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::If($cond.clone(), $then.clone(), $else.clone()), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::If($cond.clone(), $then.clone(), $else.clone()), span: $span.into() }))
     };
     (0; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Zero, span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Zero, span: $span.into() }))
     };
     (succ $t:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Succ($t.clone()), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Succ($t.clone()), span: $span.into() }))
     };
     (pred $t:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Pred($t.clone()), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Pred($t.clone()), span: $span.into() }))
     };
     (iszero $t:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::IsZero($t.clone()), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::IsZero($t.clone()), span: $span.into() }))
     };
     (unit; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Unit, span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Unit, span: $span.into() }))
     };
     (let $var:expr, $expr:expr, $body:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Let($var.into(), $expr.clone(), $body.clone()), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Let($var.into(), $expr.clone(), $body.clone()), span: $span.into() }))
     };
     (var $var:expr, $expr:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::VariableDefinition($var.into(), $expr.clone()), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::VariableDefinition($var.into(), $expr.clone()), span: $span.into() }))
     };
     (record $($term:expr),*; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Record(vec![$($term.clone()),*]), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Record(vec![$($term.clone()),*]), span: $span.into() }))
     };
     (proj $term:expr, $elem:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Projection($term.clone(), $elem), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Projection($term.clone(), $elem), span: $span.into() }))
     };
     (variant $label:expr, $term:expr, $ty:expr; $span:expr) => {
-        Rc::new(Term { kind: TermKind::Variant($label.into(), $term.clone(), $ty.clone()), span: $span.into() })
+        Rc::new(RefCell::new(Term { kind: TermKind::Variant($label.into(), $term.clone(), $ty.clone()), span: $span.into() }))
     };
 }
 
@@ -880,7 +960,7 @@ mod tests {
     use expect_test::expect;
 
     use super::*;
-    use crate::{parser::parse, types::type_of};
+    use crate::{env::base_env, parser::parse, types::type_of};
 
     fn check(input: &str, expected: expect_test::Expect) {
         let mut env = Env::new();
@@ -1047,24 +1127,24 @@ mod tests {
         let r#const = parse("λx:Bool.tru", &mut env)?;
         let const_shifted = shift(&r#const, 1)?;
         // Should shift true from 1 → 2
-        expect![[r#"Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 0, hi: 12 }, kind: Variable(2) }) }"#]].assert_eq(&format!("{:?}", const_shifted));
+        expect![[r#"RefCell { value: Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 0, hi: 12 }, kind: Variable(2) } }) } }"#]].assert_eq(&format!("{:?}", const_shifted));
 
         let test = parse("tru id", &mut env)?;
         let test_shifted = shift_above(&test, 3, 1)?;
-        expect![[r#"Term { span: Span { lo: 0, hi: 6 }, kind: Application(Term { span: Span { lo: 0, hi: 6 }, kind: Variable(0) }, Term { span: Span { lo: 0, hi: 6 }, kind: Variable(4) }) }"#]].assert_eq(&format!("{:?}", test_shifted));
-        expect![[r#"Term { span: Span { lo: 0, hi: 6 }, kind: Application(Term { span: Span { lo: 0, hi: 3 }, kind: Variable(0) }, Term { span: Span { lo: 4, hi: 6 }, kind: Variable(1) }) }"#]].assert_eq(&format!("{:?}", test));
+        expect![[r#"RefCell { value: Term { span: Span { lo: 0, hi: 6 }, kind: Application(RefCell { value: Term { span: Span { lo: 0, hi: 6 }, kind: Variable(0) } }, RefCell { value: Term { span: Span { lo: 0, hi: 6 }, kind: Variable(4) } }) } }"#]].assert_eq(&format!("{:?}", test_shifted));
+        expect![[r#"RefCell { value: Term { span: Span { lo: 0, hi: 6 }, kind: Application(RefCell { value: Term { span: Span { lo: 0, hi: 3 }, kind: Variable(0) } }, RefCell { value: Term { span: Span { lo: 4, hi: 6 }, kind: Variable(1) } }) } }"#]].assert_eq(&format!("{:?}", test));
 
         // ↑²(λ.λ.1 (0 2))
         let book_example_1 = parse("λx:Bool.λy:Bool.x (y tru)", &mut env)?;
         let b_ex_1_shifted = shift(&book_example_1, 2)?;
         // Expected λ.λ.1 (0 4)
-        expect![[r#"Term { span: Span { lo: 0, hi: 27 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 27 }, kind: Abstraction(Symbol("y"), Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }, Term { span: Span { lo: 18, hi: 27 }, kind: Application(Term { span: Span { lo: 0, hi: 27 }, kind: Variable(1) }, Term { span: Span { lo: 20, hi: 27 }, kind: Application(Term { span: Span { lo: 0, hi: 27 }, kind: Variable(0) }, Term { span: Span { lo: 0, hi: 27 }, kind: Variable(4) }) }) }) }) }"#]].assert_eq(&format!("{:?}", b_ex_1_shifted));
+        expect![[r#"RefCell { value: Term { span: Span { lo: 0, hi: 27 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 9, hi: 27 }, kind: Abstraction(Symbol("y"), Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 18, hi: 27 }, kind: Application(RefCell { value: Term { span: Span { lo: 0, hi: 27 }, kind: Variable(1) } }, RefCell { value: Term { span: Span { lo: 20, hi: 27 }, kind: Application(RefCell { value: Term { span: Span { lo: 0, hi: 27 }, kind: Variable(0) } }, RefCell { value: Term { span: Span { lo: 0, hi: 27 }, kind: Variable(4) } }) } }) } }) } }) } }"#]].assert_eq(&format!("{:?}", b_ex_1_shifted));
 
         // ↑²(λ.0 1 (λ. 0 1 2))
         let book_example_2 = parse("λx:Bool.x tru (λy:Bool.y x tru)", &mut env)?;
         let b_ex_2_shifted = shift(&book_example_2, 2)?;
         // Expected λ.0 3 (λ. 0 1 4)
-        expect![[r#"Term { span: Span { lo: 0, hi: 33 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 33 }, kind: Application(Term { span: Span { lo: 9, hi: 14 }, kind: Application(Term { span: Span { lo: 0, hi: 33 }, kind: Variable(0) }, Term { span: Span { lo: 0, hi: 33 }, kind: Variable(3) }) }, Term { span: Span { lo: 15, hi: 33 }, kind: Abstraction(Symbol("y"), Ty { span: Span { lo: 20, hi: 24 }, kind: Bool }, Term { span: Span { lo: 25, hi: 32 }, kind: Application(Term { span: Span { lo: 25, hi: 28 }, kind: Application(Term { span: Span { lo: 0, hi: 33 }, kind: Variable(0) }, Term { span: Span { lo: 0, hi: 33 }, kind: Variable(1) }) }, Term { span: Span { lo: 0, hi: 33 }, kind: Variable(4) }) }) }) }) }"#]].assert_eq(&format!("{:?}", b_ex_2_shifted));
+        expect![[r#"RefCell { value: Term { span: Span { lo: 0, hi: 33 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 9, hi: 33 }, kind: Application(RefCell { value: Term { span: Span { lo: 9, hi: 14 }, kind: Application(RefCell { value: Term { span: Span { lo: 0, hi: 33 }, kind: Variable(0) } }, RefCell { value: Term { span: Span { lo: 0, hi: 33 }, kind: Variable(3) } }) } }, RefCell { value: Term { span: Span { lo: 15, hi: 33 }, kind: Abstraction(Symbol("y"), Ty { span: Span { lo: 20, hi: 24 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 25, hi: 32 }, kind: Application(RefCell { value: Term { span: Span { lo: 25, hi: 28 }, kind: Application(RefCell { value: Term { span: Span { lo: 0, hi: 33 }, kind: Variable(0) } }, RefCell { value: Term { span: Span { lo: 0, hi: 33 }, kind: Variable(1) } }) } }, RefCell { value: Term { span: Span { lo: 0, hi: 33 }, kind: Variable(4) } }) } }) } }) } }) } }"#]].assert_eq(&format!("{:?}", b_ex_2_shifted));
         Ok(())
     }
 
@@ -1384,5 +1464,62 @@ mod tests {
             "#,
             expect![["3"]],
         );
+    }
+
+    #[test]
+    fn eval_references() {
+        check("ref 0", expect![["ref 0"]]);
+        check("let a = ref 0; !a", expect![["0"]]);
+        check("let a = ref 0; (a := 1; !a)", expect![["1"]]);
+
+        // Aliasing
+        check(
+            r#"
+            let r = ref 5;
+            let s = r;
+            (s := 20; !r)
+            "#,
+            expect![["20"]],
+        );
+
+        let mut env = base_env();
+        let mut tyenv = TyEnv::new();
+
+        check(
+            r#"
+            let c = ref 0;
+            let incc = λx:Unit.(c := succ (!c); !c);
+            let decc = λx:Unit.(c := pred (!c); !c);
+            let o = {i=incc, d=decc};
+            o.i unit
+            "#,
+            expect![["1"]],
+        );
+
+        check_env(
+            r#"
+            type NatArray = Ref (Nat → Nat);
+            let newarray = λ_:Unit.ref (λn:Nat.0);
+            let lookup = λa:NatArray.λn:Nat.(!a) n;
+            let update = λa:NatArray.λm:Nat.λv:Nat.
+                        let oldf = !a in
+                        a := (λn:Nat.if equal m n then v else oldf n);
+            let array = newarray unit;
+            "#,
+            expect![["unit"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env("lookup array 0", expect![[r#"0"#]], &mut env, &mut tyenv);
+
+        check_env(
+            "update array 1 5",
+            expect![[r#"unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env("lookup array 1", expect![[r#"5"#]], &mut env, &mut tyenv);
     }
 }

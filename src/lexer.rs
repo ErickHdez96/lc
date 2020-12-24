@@ -76,6 +76,8 @@ pub enum TokenKind {
     Head,
     #[token("tail")]
     Tail,
+    #[token("ref")]
+    Ref,
 
     #[regex("[0-9]+")]
     Number,
@@ -83,6 +85,8 @@ pub enum TokenKind {
     #[regex(r"[a-zA-Z][a-zA-Z0-9_]*'*")]
     Ident,
 
+    #[token(":=")]
+    RefAssign,
     #[token(".")]
     Period,
     #[token(",")]
@@ -107,6 +111,8 @@ pub enum TokenKind {
     Semicolon,
     #[token(":")]
     Colon,
+    #[token("!")]
+    Bang,
 
     #[regex(r"λ|\\")]
     Lambda,
@@ -154,6 +160,8 @@ impl TokenKind {
                 | TokenKind::IsNil
                 | TokenKind::Head
                 | TokenKind::Tail
+                | TokenKind::Bang
+                | TokenKind::Ref
         )
     }
 
@@ -224,6 +232,9 @@ impl std::fmt::Display for TokenKind {
                 IsNil => "isnil",
                 Head => "head",
                 Tail => "tail",
+                Ref => "ref",
+                Bang => "!",
+                RefAssign => ":=",
                 Number => "<number>",
                 Error => "<unknown char>",
                 Eof => "<eof>",
@@ -292,6 +303,9 @@ mod tests {
         check("type", vec![Type]);
         check("fix", vec![Fix]);
         check("letrec", vec![Letrec]);
+        check("ref", vec![Ref]);
+        check(":=", vec![RefAssign]);
+        check("!", vec![Bang]);
         check(".", vec![Period]);
         check(",", vec![Comma]);
         check("(", vec![LParen]);

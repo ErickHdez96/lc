@@ -27,6 +27,10 @@ t ::=                   terms:
     isnil[T] t                  test for empty list
     head[T] t                   head of a list
     tail[T] t                   tail of a list
+    ref t                       reference creation
+    !t                          dereference
+    t := t                      assignment
+    l                           store location
 
 v ::=                   values:
     λx:T.t                      abstraction value
@@ -37,6 +41,7 @@ v ::=                   values:
     { lᵢ=vᵢ (i∈1..n) }          record value
     nil[T]                      empty list
     cons[T] v v                 list constructor
+    l                           store location
 
 nv ::=                  numeric values:
     0                           zero value
@@ -55,10 +60,19 @@ T ::=                   types:
     { lᵢ:Tᵢ (i∈1..n) }          type of records
     <lᵢ:Tᵢ (i∈1..n)>            type of variants
     List T                      type of lists
+    Ref T                       type of reference cells
 
 Γ ::=                   contexts:
     ∅                           empty context
     Γ,x:T                       term variable binding
+
+μ ::=                   stores:
+    ∅                           empty store
+    μ, l = v                    location binding
+
+Σ ::=                   store typings:
+    ø                           empty store typing
+    Σ,l:T                       location typing
 ```
 
 ## Matching rules
@@ -176,6 +190,32 @@ tail[S] (cons[T] v₁ v₂) → v₂            E-TailCons
         t₁ → t′₁
 ------------------------                E-Tail
 tail[T] t₁ → tail[T] t′₁
+
+        l ∉ dom(μ)
+----------------------------            E-RefV
+ref v₁ | μ → l | (μ, l ↦ v₁)
+
+    t₁ | μ → t′₁ | μ′
+-------------------------               E-Ref
+ref t₁ | μ → ref t′₁ | μ′
+
+   μ(l) = v
+--------------                          E-DerefLoc
+!l | μ → v | μ
+
+  t₁ | μ → t′₁ | μ′
+---------------------                   E-Deref 
+! t₁ | μ → ! t′₁ | μ′
+
+l := v₂ | μ → unit | [l ↦ v₂]μ          E-Assign
+
+      t₁ | μ → t′₁ | μ′
+-----------------------------           E-Assign1
+t₁ := t₂ | μ → t′₁ := t₂ | μ′
+
+      t₂ | μ → t′₂ | μ′
+-----------------------------           E-Assign2
+v₁ := t₂ | μ → v₁ := t′₂ | μ′
 ```
 
 ## Typing
@@ -266,6 +306,22 @@ iszero t₁ : Bool
    Γ ⊢ t₂ : List T₁₁
 ----------------------                  T-Tail
 Γ ⊢ tail[T₁₁] t₁ : T₁₁
+
+    Σ(l) = T₁
+------------------                      T-Loc
+Γ | Σ ⊢ l : Ref T₁
+
+    Γ | Σ ⊢ t₁ : T₁
+-----------------------                 T-Ref
+Γ | Σ ⊢ ref t₁ : Ref T₁
+
+Γ | Σ ⊢ t₁ : Ref T₁₁
+--------------------                    T-Deref
+  Γ | Σ ⊢ !t₁ : T₁₁
+
+Γ | Σ ⊢ t₁ : Ref T₁₁  Γ | Σ ⊢ t₂ : T₁₁
+--------------------------------------  T-Assign
+       Γ | Σ ⊢ t₁ := t₂ : Unit
 ```
 
 ## Derived forms

@@ -126,7 +126,7 @@ impl<'a> Env<'a> {
         let s = s.into();
         let mut val = self.insert_if_not_exists(s);
         if val.term.is_some() {
-            Err(error!("Variable `{}` already bound", s; term.span))
+            Err(error!("Variable `{}` already bound", s; term.borrow().span))
         } else {
             val.term = Some(Rc::clone(term));
             Ok(())
@@ -234,37 +234,14 @@ pub fn base_tyenv() -> TyEnv<'static> {
     TyEnv::new()
 }
 
-fn base_env_() -> Result<Env<'static>> {
+fn base_env_() -> std::result::Result<Env<'static>, Box<dyn std::error::Error>> {
     use crate::parser::parse;
-    use crate::types::type_of;
+    use crate::term::eval;
+    let lc_std = include_str!("../std.lc");
     let mut env = Env::new();
     let mut ty_env = TyEnv::new();
 
-    macro_rules! p {
-        ($name:expr, $input:expr, $env:expr, $tyenv:expr) => {{
-            let t = parse($input, &mut $env)?;
-            let ty = type_of(&t, &mut $env, &mut $tyenv)?;
-            $env.insert_term($name, &t)?;
-            $env.insert_type($name, &ty)?;
-        }};
-    }
-
-    p!("not", "λb:Bool.if b then false else true", env, ty_env);
-    p!("and", "λb:Bool.λc:Bool.if b then c else false", env, ty_env);
-    p!("or", "λb:Bool.λc:Bool.if b then true else c", env, ty_env);
-    p!(
-        "eqb",
-        "λb1:Bool.λb2:Bool.if b1 then b2 else not b2",
-        env,
-        ty_env
-    );
-    p!(
-        "neqb",
-        "λb1:Bool.λb2:Bool.if b1 then not b2 else b2",
-        env,
-        ty_env
-    );
-
+    eval(&parse(&lc_std, &mut env)?, &mut env, &mut ty_env)?;
     Ok(env)
 }
 

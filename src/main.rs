@@ -39,6 +39,7 @@ impl From<lc::Error> for Error {
 }
 
 fn run_file(file_path: impl AsRef<Path>) -> Result<(), Error> {
+    env_logger::init();
     let file_path = file_path.as_ref();
     let content = fs::read_to_string(file_path)?;
 
@@ -46,10 +47,6 @@ fn run_file(file_path: impl AsRef<Path>) -> Result<(), Error> {
     let mut tyenv = base_tyenv();
 
     let (term, ty) = parse(&content, &mut env)
-        //.map(|p| {
-        //    println!("{}", term_to_string(&p, &env).unwrap());
-        //    p
-        //})
         .and_then(|p| eval(&p, &mut env, &mut tyenv))
         .and_then(|p| {
             Ok((

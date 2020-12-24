@@ -12,7 +12,7 @@ use crate::{
     types::{LTy, TyKind},
     Span,
 };
-use std::{collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -43,7 +43,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse(mut self, env: &mut Env) -> Result<LTerm> {
-        let parsed = self.parse_application_or_var(env)?;
+        let parsed = self.parse_application_or_var(true, env)?;
 
         match self.next() {
             t if t.kind != TokenKind::Eof => Err(error!("Expected <eof>, got `{}`", t; t.span)),
@@ -105,8 +105,8 @@ impl<'a> Parser<'a> {
             TokenKind::Succ | TokenKind::Pred | TokenKind::IsZero => {
                 let span = self.current_span();
                 let t = self.next().kind;
-                let term = self.parse_application_or_var(env)?;
-                let span = span.with_hi(term.span.hi);
+                let term = self.parse_application_or_var(false, env)?;
+                let span = span.with_hi(term.borrow().span.hi);
                 Ok(match t {
                     TokenKind::Succ => T![succ term; span],
                     TokenKind::Pred => T![pred term; span],
@@ -117,10 +117,10 @@ impl<'a> Parser<'a> {
             TokenKind::LParen => {
                 let span = self.current_span();
                 self.bump();
-                let mut term = self.parse_application_or_var(env)?;
+                let mut term = self.parse_application_or_var(true, env)?;
                 let span = span.with_hi(self.eat(TokenKind::RParen)?.span.hi);
                 if let Some(t) = Rc::get_mut(&mut term) {
-                    t.span = span;
+                    t.borrow_mut().span = span;
                 }
                 Ok(term)
             }
@@ -145,7 +145,8 @@ impl<'a> Parser<'a> {
             | TokenKind::Pipe
             | TokenKind::Semicolon
             | TokenKind::LBracket
-            | TokenKind::RBracket => {
+            | TokenKind::RBracket
+            | TokenKind::RefAssign => {
                 let t = self.next();
                 Err(error!("Expected a term, got `{}`", t; t.span))
             }
@@ -162,12 +163,12 @@ impl<'a> Parser<'a> {
             TokenKind::If => {
                 let span = self.current_span();
                 self.bump();
-                let cond = self.parse_application_or_var(env)?;
+                let cond = self.parse_application_or_var(false, env)?;
                 self.eat(TokenKind::Then)?;
-                let then = self.parse_application_or_var(env)?;
+                let then = self.parse_application_or_var(false, env)?;
                 self.eat(TokenKind::Else)?;
-                let else_b = self.parse_application_or_var(env)?;
-                let span = span.with_hi(else_b.span.hi);
+                let else_b = self.parse_application_or_var(false, env)?;
+                let span = span.with_hi(else_b.borrow().span.hi);
                 Ok(T![if cond, then, else_b; span])
             }
             TokenKind::Let => {
@@ -175,7 +176,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let (p, p_span) = self.parse_pattern()?;
                 self.eat(TokenKind::Assign)?;
-                let t1 = self.parse_application_or_var(env)?;
+                let t1 = self.parse_application_or_var(false, env)?;
                 if self.current() == TokenKind::Semicolon {
                     let end = self.eat(TokenKind::Semicolon)?;
                     resolve_match_mut(&p, env, p_span)?;
@@ -183,8 +184,8 @@ impl<'a> Parser<'a> {
                 } else {
                     self.eat(TokenKind::In)?;
                     let mut env = resolve_match(&p, &env, p_span)?;
-                    let t2 = self.parse_application_or_var(&mut env)?;
-                    let span = span.with_hi(t2.span.hi);
+                    let t2 = self.parse_application_or_var(false, &mut env)?;
+                    let span = span.with_hi(t2.borrow().span.hi);
                     Ok(T![let p, t1, t2; span])
                 }
             }
@@ -203,7 +204,7 @@ impl<'a> Parser<'a> {
                     } else {
                         Symbol::from((terms.len() + 1).to_string())
                     };
-                    let term = self.parse_application_or_var(env)?;
+                    let term = self.parse_application_or_var(false, env)?;
                     keys.push(key);
                     terms.insert(key, term);
                     if self.current() != TokenKind::Comma {
@@ -224,10 +225,10 @@ impl<'a> Parser<'a> {
                 };
 
                 let span = span.with_hi(brace_span.hi);
-                Ok(Rc::new(Term {
+                Ok(Rc::new(RefCell::new(Term {
                     kind: TermKind::Record(terms, keys),
                     span,
-                }))
+                })))
             }
             TokenKind::Type => {
                 let start = self.current_span();
@@ -236,10 +237,10 @@ impl<'a> Parser<'a> {
                 self.eat(TokenKind::Assign)?;
                 let ty = self.parse_type(env)?;
                 let end = self.eat(TokenKind::Semicolon)?;
-                Ok(Rc::new(Term {
+                Ok(Rc::new(RefCell::new(Term {
                     span: start.with_hi(end.span.hi),
                     kind: TermKind::TypeDefinition(ident, ty),
-                }))
+                })))
             }
             TokenKind::Case => self.parse_case(env),
             // <l=t> as T
@@ -248,23 +249,24 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let (ident, _) = self.eat_ident(false)?;
                 self.eat(TokenKind::Assign)?;
-                let t = self.parse_application_or_var(env)?;
+                let t = self.parse_application_or_var(false, env)?;
                 self.eat(TokenKind::Gt)?;
                 self.eat(TokenKind::As)?;
                 let ty = self.parse_type(env)?;
-                Ok(Rc::new(Term {
+                Ok(Rc::new(RefCell::new(Term {
                     span: start.with_hi(ty.span.hi),
                     kind: TermKind::Variant(ident, t, ty),
-                }))
+                })))
             }
             TokenKind::Fix => {
                 let start = self.current_span();
                 self.bump();
                 let t = self.parse_term(env)?;
-                Ok(Rc::new(Term {
-                    span: start.with_hi(t.span.hi),
+                let t_span = t.borrow().span;
+                Ok(Rc::new(RefCell::new(Term {
+                    span: start.with_hi(t_span.hi),
                     kind: TermKind::Fix(t),
-                }))
+                })))
             }
             TokenKind::Letrec => {
                 let start = self.current_span();
@@ -275,40 +277,43 @@ impl<'a> Parser<'a> {
                 self.eat(TokenKind::Assign)?;
                 let mut fixenv = Env::with_parent(&env);
                 fixenv.insert_symbol(x, x_span)?;
-                let t1 = self.parse_application_or_var(&mut fixenv)?;
+                let t1 = self.parse_application_or_var(false, &mut fixenv)?;
                 if self.current() == TokenKind::Semicolon {
                     let end = self.eat(TokenKind::Semicolon)?;
                     env.insert_symbol(x, x_span)?;
-                    Ok(Rc::new(Term {
+                    let t_span = t1.borrow().span;
+                    Ok(Rc::new(RefCell::new(Term {
                         span: start.with_hi(end.span.hi),
                         kind: TermKind::VariableDefinition(
                             Box::new(Pattern::Var(x)),
-                            Rc::new(Term {
-                                span: x_span.with_hi(t1.span.hi),
-                                kind: TermKind::Fix(Rc::new(Term {
-                                    span: x_span.with_hi(t1.span.hi),
+                            Rc::new(RefCell::new(Term {
+                                span: x_span.with_hi(t_span.hi),
+                                kind: TermKind::Fix(Rc::new(RefCell::new(Term {
+                                    span: x_span.with_hi(t_span.hi),
                                     kind: TermKind::Abstraction(x, ty, t1),
-                                })),
-                            }),
+                                }))),
+                            })),
                         ),
-                    }))
+                    })))
                 } else {
                     self.eat(TokenKind::In)?;
-                    let t2 = self.parse_application_or_var(&mut fixenv)?;
-                    Ok(Rc::new(Term {
-                        span: start.with_hi(t2.span.hi),
+                    let t2 = self.parse_application_or_var(false, &mut fixenv)?;
+                    let t1_span = t1.borrow().span;
+                    let t2_span = t2.borrow().span;
+                    Ok(Rc::new(RefCell::new(Term {
+                        span: start.with_hi(t2_span.hi),
                         kind: TermKind::Let(
                             Box::new(Pattern::Var(x)),
-                            Rc::new(Term {
-                                span: x_span.with_hi(t1.span.hi),
-                                kind: TermKind::Fix(Rc::new(Term {
-                                    span: x_span.with_hi(t1.span.hi),
+                            Rc::new(RefCell::new(Term {
+                                span: x_span.with_hi(t1_span.hi),
+                                kind: TermKind::Fix(Rc::new(RefCell::new(Term {
+                                    span: x_span.with_hi(t1_span.hi),
                                     kind: TermKind::Abstraction(x, ty, t1),
-                                })),
-                            }),
+                                }))),
+                            })),
                             t2,
                         ),
-                    }))
+                    })))
                 }
             }
             TokenKind::Nil => {
@@ -317,10 +322,10 @@ impl<'a> Parser<'a> {
                 self.eat(TokenKind::LBracket)?;
                 let ty = self.parse_type(env)?;
                 let end = self.eat(TokenKind::RBracket)?.span;
-                Ok(Rc::new(Term {
+                Ok(Rc::new(RefCell::new(Term {
                     span: start.with_hi(end.hi),
                     kind: TermKind::Nil(ty),
-                }))
+                })))
             }
             TokenKind::Cons => {
                 let start = self.current_span();
@@ -330,10 +335,11 @@ impl<'a> Parser<'a> {
                 self.eat(TokenKind::RBracket)?;
                 let t1 = self.parse_term(env)?;
                 let t2 = self.parse_term(env)?;
-                Ok(Rc::new(Term {
-                    span: start.with_hi(t2.span.hi),
+                let t2_span = t2.borrow().span;
+                Ok(Rc::new(RefCell::new(Term {
+                    span: start.with_hi(t2_span.hi),
                     kind: TermKind::Cons(t1, t2, ty),
-                }))
+                })))
             }
             TokenKind::IsNil => {
                 let start = self.current_span();
@@ -342,10 +348,11 @@ impl<'a> Parser<'a> {
                 let ty = self.parse_type(env)?;
                 self.eat(TokenKind::RBracket)?;
                 let t = self.parse_term(env)?;
-                Ok(Rc::new(Term {
-                    span: start.with_hi(t.span.hi),
+                let t_span = t.borrow().span;
+                Ok(Rc::new(RefCell::new(Term {
+                    span: start.with_hi(t_span.hi),
                     kind: TermKind::IsNil(t, ty),
-                }))
+                })))
             }
             TokenKind::Head => {
                 let start = self.current_span();
@@ -354,10 +361,11 @@ impl<'a> Parser<'a> {
                 let ty = self.parse_type(env)?;
                 self.eat(TokenKind::RBracket)?;
                 let t = self.parse_term(env)?;
-                Ok(Rc::new(Term {
-                    span: start.with_hi(t.span.hi),
+                let t_span = t.borrow().span;
+                Ok(Rc::new(RefCell::new(Term {
+                    span: start.with_hi(t_span.hi),
                     kind: TermKind::Head(t, ty),
-                }))
+                })))
             }
             TokenKind::Tail => {
                 let start = self.current_span();
@@ -366,15 +374,36 @@ impl<'a> Parser<'a> {
                 let ty = self.parse_type(env)?;
                 self.eat(TokenKind::RBracket)?;
                 let t = self.parse_term(env)?;
-                Ok(Rc::new(Term {
-                    span: start.with_hi(t.span.hi),
+                let t_span = t.borrow().span;
+                Ok(Rc::new(RefCell::new(Term {
+                    span: start.with_hi(t_span.hi),
                     kind: TermKind::Tail(t, ty),
-                }))
+                })))
+            }
+            TokenKind::Ref => {
+                let start = self.current_span();
+                self.bump();
+                let t = self.parse_term(env)?;
+                let t_span = t.borrow().span;
+                Ok(Rc::new(RefCell::new(Term {
+                    span: start.with_hi(t_span.hi),
+                    kind: TermKind::Ref(t),
+                })))
+            }
+            TokenKind::Bang => {
+                let start = self.current_span();
+                self.bump();
+                let t = self.parse_term(env)?;
+                let t_span = t.borrow().span;
+                Ok(Rc::new(RefCell::new(Term {
+                    span: start.with_hi(t_span.hi),
+                    kind: TermKind::Deref(t),
+                })))
             }
         }
     }
 
-    fn parse_application_or_var(&mut self, env: &mut Env) -> Result<LTerm> {
+    fn parse_application_or_var(&mut self, allow_statements: bool, env: &mut Env) -> Result<LTerm> {
         let span = self.current_span();
         let mut application_items = vec![];
         while self.current().can_start_term() {
@@ -391,17 +420,43 @@ impl<'a> Parser<'a> {
         let mut application_items = application_items.into_iter();
         let t1 = application_items.next().unwrap();
 
-        match application_items.next() {
+        let t = match application_items.next() {
             Some(t2) => {
-                let mut c_span = span.with_hi(t2.span.hi);
-                Ok(
-                    application_items.fold(T![app t1, t2; c_span], move |acc, current| {
-                        c_span = c_span.with_hi(current.span.hi);
-                        T![app acc, current; c_span]
-                    }),
-                )
+                let mut c_span = span.with_hi(t2.borrow().span.hi);
+                application_items.fold(T![app t1, t2; c_span], move |acc, current| {
+                    c_span = c_span.with_hi(current.borrow().span.hi);
+                    T![app acc, current; c_span]
+                })
             }
-            None => Ok(t1),
+            None => t1,
+        };
+
+        if self.current() == TokenKind::Semicolon && allow_statements {
+            self.bump();
+            let mut env = Env::with_parent(env);
+            env.insert_symbol("_", t.borrow().span)?;
+            let t2 = self.parse_application_or_var(true, &mut env)?;
+            let t_span = t.borrow().span;
+            let t2_span = t2.borrow().span;
+            Ok(Rc::new(RefCell::new(Term {
+                span: t_span.with_hi(t2_span.hi),
+                kind: TermKind::Application(
+                    Rc::new(RefCell::new(Term {
+                        span: t_span.with_hi(t2_span.hi),
+                        kind: TermKind::Abstraction(
+                            Symbol::from("_"),
+                            Rc::new(Ty {
+                                span: t_span,
+                                kind: TyKind::Unit,
+                            }),
+                            t2,
+                        ),
+                    })),
+                    t,
+                ),
+            })))
+        } else {
+            Ok(t)
         }
     }
 
@@ -467,14 +522,23 @@ impl<'a> Parser<'a> {
                             error!("Expected an identifier or number, got `{}`", t; t.span),
                         );
                     };
-                    let span = t.span.with_hi(end.hi);
+                    let span = t.borrow().span.with_hi(end.hi);
                     t = T![proj t, elem; span];
                 }
                 TokenKind::As => {
                     self.bump();
                     let ty = self.parse_type(env)?;
-                    let span = t.span.with_hi(self.current_span().hi);
+                    let span = t.borrow().span.with_hi(ty.span.hi);
                     t = T![asc t, ty; span];
+                }
+                TokenKind::RefAssign => {
+                    self.bump();
+                    let t2 = self.parse_application_or_var(false, env)?;
+                    let span = t.borrow().span.with_hi(t.borrow().span.hi);
+                    t = Rc::new(RefCell::new(Term {
+                        span,
+                        kind: TermKind::RefAssign(t, t2),
+                    }))
                 }
                 _ => break,
             }
@@ -546,8 +610,8 @@ impl<'a> Parser<'a> {
         self.eat(TokenKind::Period)?;
         let mut env = Env::with_parent(env);
         env.insert_type(ident, &ty)?;
-        let body = self.parse_application_or_var(&mut env)?;
-        let span = span.with_hi(body.span.hi);
+        let body = self.parse_application_or_var(false, &mut env)?;
+        let span = span.with_hi(body.borrow().span.hi);
         Ok(T![abs ident, ty, body; span])
     }
 
@@ -577,6 +641,14 @@ impl<'a> Parser<'a> {
                     let inner_ty = self.parse_type(env)?;
                     Rc::new(Ty {
                         kind: TyKind::List(inner_ty),
+                        span,
+                    })
+                }
+                t if t.text == "Ref" => {
+                    let span = t.span;
+                    let inner_ty = self.parse_type(env)?;
+                    Rc::new(Ty {
+                        kind: TyKind::Ref(inner_ty),
                         span,
                     })
                 }
@@ -668,13 +740,13 @@ impl<'a> Parser<'a> {
     fn parse_case(&mut self, env: &mut Env) -> Result<LTerm> {
         let start = self.current_span();
         self.eat(TokenKind::Case)?;
-        let case_v = self.parse_application_or_var(env)?;
+        let case_v = self.parse_application_or_var(false, env)?;
         self.eat(TokenKind::Of)?;
         let (branches, keys, end) = self.parse_case_branches(env)?;
-        Ok(Rc::new(Term {
+        Ok(Rc::new(RefCell::new(Term {
             span: start.with_hi(end.hi),
             kind: TermKind::Case(case_v, branches, keys),
-        }))
+        })))
     }
 
     fn parse_case_branches(&mut self, env: &mut Env) -> Result<(CaseBranches, Vec<Symbol>, Span)> {
@@ -692,8 +764,8 @@ impl<'a> Parser<'a> {
             self.eat(TokenKind::FatArrow)?;
             let mut env = Env::with_parent(&env);
             env.insert_symbol(var, var_span)?;
-            let term = self.parse_application_or_var(&mut env)?;
-            last_span = term.span;
+            let term = self.parse_application_or_var(false, &mut env)?;
+            last_span = term.borrow().span;
             branches.insert(kind, (var, term));
             keys.push(kind);
 
@@ -798,19 +870,19 @@ mod tests {
         check(
             "λx:Bool.x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 10 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 10 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) } }) } })"#
             ]],
         );
         check(
             r"\x:Bool.x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 9 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 3, hi: 7 }, kind: Bool }, Term { span: Span { lo: 8, hi: 9 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 9 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 3, hi: 7 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 8, hi: 9 }, kind: Variable(0) } }) } })"#
             ]],
         );
         check(
             r"λx:Bool.λ_:Bool.x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 19 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 19 }, kind: Abstraction(Symbol("_"), Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }, Term { span: Span { lo: 18, hi: 19 }, kind: Variable(1) }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 19 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 9, hi: 19 }, kind: Abstraction(Symbol("_"), Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 18, hi: 19 }, kind: Variable(1) } }) } }) } })"#
             ]],
         );
     }
@@ -820,7 +892,7 @@ mod tests {
         check(
             "λx:Bool.x x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 12 }, kind: Application(Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) }, Term { span: Span { lo: 11, hi: 12 }, kind: Variable(0) }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 9, hi: 12 }, kind: Application(RefCell { value: Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) } }, RefCell { value: Term { span: Span { lo: 11, hi: 12 }, kind: Variable(0) } }) } }) } })"#
             ]],
         );
     }
@@ -830,7 +902,7 @@ mod tests {
         check(
             "λy:Bool.(λx:Bool.x) y",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 23 }, kind: Abstraction(Symbol("y"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 23 }, kind: Application(Term { span: Span { lo: 9, hi: 21 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, Term { span: Span { lo: 19, hi: 20 }, kind: Variable(0) }) }, Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 23 }, kind: Abstraction(Symbol("y"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 9, hi: 23 }, kind: Application(RefCell { value: Term { span: Span { lo: 9, hi: 21 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 19, hi: 20 }, kind: Variable(0) } }) } }, RefCell { value: Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) } }) } }) } })"#
             ]],
         );
     }
@@ -860,7 +932,7 @@ mod tests {
         check(
             "(λx:Bool.x)",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, Term { span: Span { lo: 10, hi: 11 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 10, hi: 11 }, kind: Variable(0) } }) } })"#
             ]],
         );
     }
@@ -870,7 +942,7 @@ mod tests {
         check(
             "λx:(Bool).x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, Term { span: Span { lo: 11, hi: 12 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 11, hi: 12 }, kind: Variable(0) } }) } })"#
             ]],
         );
     }
@@ -881,7 +953,7 @@ mod tests {
         check(
             "λf:Bool → Bool.λb:Bool.f b",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 30 }, kind: Abstraction(Symbol("f"), Ty { span: Span { lo: 4, hi: 17 }, kind: Abstraction(Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }) }, Term { span: Span { lo: 18, hi: 30 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 22, hi: 26 }, kind: Bool }, Term { span: Span { lo: 27, hi: 30 }, kind: Application(Term { span: Span { lo: 27, hi: 28 }, kind: Variable(1) }, Term { span: Span { lo: 29, hi: 30 }, kind: Variable(0) }) }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 30 }, kind: Abstraction(Symbol("f"), Ty { span: Span { lo: 4, hi: 17 }, kind: Abstraction(Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }) }, RefCell { value: Term { span: Span { lo: 18, hi: 30 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 22, hi: 26 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 27, hi: 30 }, kind: Application(RefCell { value: Term { span: Span { lo: 27, hi: 28 }, kind: Variable(1) } }, RefCell { value: Term { span: Span { lo: 29, hi: 30 }, kind: Variable(0) } }) } }) } }) } })"#
             ]],
         );
 
@@ -890,14 +962,14 @@ mod tests {
         check(
             "λf:Bool → Bool → Bool.λb1:Bool.λb2:Bool.f b1 b2",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 54 }, kind: Abstraction(Symbol("f"), Ty { span: Span { lo: 4, hi: 26 }, kind: Abstraction(Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Ty { span: Span { lo: 13, hi: 26 }, kind: Abstraction(Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }, Ty { span: Span { lo: 22, hi: 26 }, kind: Bool }) }) }, Term { span: Span { lo: 27, hi: 54 }, kind: Abstraction(Symbol("b1"), Ty { span: Span { lo: 32, hi: 36 }, kind: Bool }, Term { span: Span { lo: 37, hi: 54 }, kind: Abstraction(Symbol("b2"), Ty { span: Span { lo: 42, hi: 46 }, kind: Bool }, Term { span: Span { lo: 47, hi: 54 }, kind: Application(Term { span: Span { lo: 47, hi: 51 }, kind: Application(Term { span: Span { lo: 47, hi: 48 }, kind: Variable(2) }, Term { span: Span { lo: 49, hi: 51 }, kind: Variable(1) }) }, Term { span: Span { lo: 52, hi: 54 }, kind: Variable(0) }) }) }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 54 }, kind: Abstraction(Symbol("f"), Ty { span: Span { lo: 4, hi: 26 }, kind: Abstraction(Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Ty { span: Span { lo: 13, hi: 26 }, kind: Abstraction(Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }, Ty { span: Span { lo: 22, hi: 26 }, kind: Bool }) }) }, RefCell { value: Term { span: Span { lo: 27, hi: 54 }, kind: Abstraction(Symbol("b1"), Ty { span: Span { lo: 32, hi: 36 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 37, hi: 54 }, kind: Abstraction(Symbol("b2"), Ty { span: Span { lo: 42, hi: 46 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 47, hi: 54 }, kind: Application(RefCell { value: Term { span: Span { lo: 47, hi: 51 }, kind: Application(RefCell { value: Term { span: Span { lo: 47, hi: 48 }, kind: Variable(2) } }, RefCell { value: Term { span: Span { lo: 49, hi: 51 }, kind: Variable(1) } }) } }, RefCell { value: Term { span: Span { lo: 52, hi: 54 }, kind: Variable(0) } }) } }) } }) } }) } })"#
             ]],
         );
 
         check(
             "λf:(Bool → Bool) → Bool.λb:Bool → Bool.f b",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 50 }, kind: Abstraction(Symbol("f"), Ty { span: Span { lo: 5, hi: 28 }, kind: Abstraction(Ty { span: Span { lo: 5, hi: 18 }, kind: Abstraction(Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }) }, Ty { span: Span { lo: 24, hi: 28 }, kind: Bool }) }, Term { span: Span { lo: 29, hi: 50 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 33, hi: 46 }, kind: Abstraction(Ty { span: Span { lo: 33, hi: 37 }, kind: Bool }, Ty { span: Span { lo: 42, hi: 46 }, kind: Bool }) }, Term { span: Span { lo: 47, hi: 50 }, kind: Application(Term { span: Span { lo: 47, hi: 48 }, kind: Variable(1) }, Term { span: Span { lo: 49, hi: 50 }, kind: Variable(0) }) }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 50 }, kind: Abstraction(Symbol("f"), Ty { span: Span { lo: 5, hi: 28 }, kind: Abstraction(Ty { span: Span { lo: 5, hi: 18 }, kind: Abstraction(Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }) }, Ty { span: Span { lo: 24, hi: 28 }, kind: Bool }) }, RefCell { value: Term { span: Span { lo: 29, hi: 50 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 33, hi: 46 }, kind: Abstraction(Ty { span: Span { lo: 33, hi: 37 }, kind: Bool }, Ty { span: Span { lo: 42, hi: 46 }, kind: Bool }) }, RefCell { value: Term { span: Span { lo: 47, hi: 50 }, kind: Application(RefCell { value: Term { span: Span { lo: 47, hi: 48 }, kind: Variable(1) } }, RefCell { value: Term { span: Span { lo: 49, hi: 50 }, kind: Variable(0) } }) } }) } }) } })"#
             ]],
         );
     }
@@ -912,7 +984,7 @@ mod tests {
             else
                 λx:Bool.false",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 128 }, kind: If(Term { span: Span { lo: 19, hi: 36 }, kind: Application(Term { span: Span { lo: 19, hi: 31 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 24, hi: 28 }, kind: Bool }, Term { span: Span { lo: 29, hi: 30 }, kind: Variable(0) }) }, Term { span: Span { lo: 32, hi: 36 }, kind: True }) }, Term { span: Span { lo: 70, hi: 80 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 74, hi: 78 }, kind: Bool }, Term { span: Span { lo: 79, hi: 80 }, kind: Variable(0) }) }, Term { span: Span { lo: 114, hi: 128 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 118, hi: 122 }, kind: Bool }, Term { span: Span { lo: 123, hi: 128 }, kind: False }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 128 }, kind: If(RefCell { value: Term { span: Span { lo: 19, hi: 36 }, kind: Application(RefCell { value: Term { span: Span { lo: 19, hi: 31 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 24, hi: 28 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 29, hi: 30 }, kind: Variable(0) } }) } }, RefCell { value: Term { span: Span { lo: 32, hi: 36 }, kind: True } }) } }, RefCell { value: Term { span: Span { lo: 70, hi: 80 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 74, hi: 78 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 79, hi: 80 }, kind: Variable(0) } }) } }, RefCell { value: Term { span: Span { lo: 114, hi: 128 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 118, hi: 122 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 123, hi: 128 }, kind: False } }) } }) } })"#
             ]],
         );
     }
@@ -922,13 +994,13 @@ mod tests {
         check(
             "λx:A.x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 7 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 5 }, kind: Base(Symbol("A")) }, Term { span: Span { lo: 6, hi: 7 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 7 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 5 }, kind: Base(Symbol("A")) }, RefCell { value: Term { span: Span { lo: 6, hi: 7 }, kind: Variable(0) } }) } })"#
             ]],
         );
         check(
             "λx:A → A.x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 13 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 11 }, kind: Abstraction(Ty { span: Span { lo: 4, hi: 5 }, kind: Base(Symbol("A")) }, Ty { span: Span { lo: 10, hi: 11 }, kind: Base(Symbol("A")) }) }, Term { span: Span { lo: 12, hi: 13 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 13 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 11 }, kind: Abstraction(Ty { span: Span { lo: 4, hi: 5 }, kind: Base(Symbol("A")) }, Ty { span: Span { lo: 10, hi: 11 }, kind: Base(Symbol("A")) }) }, RefCell { value: Term { span: Span { lo: 12, hi: 13 }, kind: Variable(0) } }) } })"#
             ]],
         );
     }
@@ -937,67 +1009,67 @@ mod tests {
     fn parse_nats() {
         check(
             "0",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 1 }, kind: Zero })"#]],
+            expect![[r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 1 }, kind: Zero } })"#]],
         );
         check(
             "1",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Zero }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 1 }, kind: Succ(RefCell { value: Term { span: Span { lo: 0, hi: 1 }, kind: Zero } }) } })"#
             ]],
         );
         check(
             "5",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Succ(Term { span: Span { lo: 0, hi: 1 }, kind: Zero }) }) }) }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 1 }, kind: Succ(RefCell { value: Term { span: Span { lo: 0, hi: 1 }, kind: Succ(RefCell { value: Term { span: Span { lo: 0, hi: 1 }, kind: Succ(RefCell { value: Term { span: Span { lo: 0, hi: 1 }, kind: Succ(RefCell { value: Term { span: Span { lo: 0, hi: 1 }, kind: Succ(RefCell { value: Term { span: Span { lo: 0, hi: 1 }, kind: Zero } }) } }) } }) } }) } }) } })"#
             ]],
         );
         // We parse it, but the typechecker throws an error
         check(
             "0 0",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 3 }, kind: Application(Term { span: Span { lo: 0, hi: 1 }, kind: Zero }, Term { span: Span { lo: 2, hi: 3 }, kind: Zero }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 3 }, kind: Application(RefCell { value: Term { span: Span { lo: 0, hi: 1 }, kind: Zero } }, RefCell { value: Term { span: Span { lo: 2, hi: 3 }, kind: Zero } }) } })"#
             ]],
         );
         check(
             "λx:Nat.x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 9 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 7 }, kind: Nat }, Term { span: Span { lo: 8, hi: 9 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 9 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 7 }, kind: Nat }, RefCell { value: Term { span: Span { lo: 8, hi: 9 }, kind: Variable(0) } }) } })"#
             ]],
         );
         check(
             "pred 0",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 6 }, kind: Pred(Term { span: Span { lo: 5, hi: 6 }, kind: Zero }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 6 }, kind: Pred(RefCell { value: Term { span: Span { lo: 5, hi: 6 }, kind: Zero } }) } })"#
             ]],
         );
         check(
             "pred true",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 9 }, kind: Pred(Term { span: Span { lo: 5, hi: 9 }, kind: True }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 9 }, kind: Pred(RefCell { value: Term { span: Span { lo: 5, hi: 9 }, kind: True } }) } })"#
             ]],
         );
         check(
             "succ 0",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 6 }, kind: Succ(Term { span: Span { lo: 5, hi: 6 }, kind: Zero }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 6 }, kind: Succ(RefCell { value: Term { span: Span { lo: 5, hi: 6 }, kind: Zero } }) } })"#
             ]],
         );
         check(
             "iszero 0",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: IsZero(Term { span: Span { lo: 7, hi: 8 }, kind: Zero }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 8 }, kind: IsZero(RefCell { value: Term { span: Span { lo: 7, hi: 8 }, kind: Zero } }) } })"#
             ]],
         );
         check(
             "iszero pred 0",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 13 }, kind: IsZero(Term { span: Span { lo: 7, hi: 13 }, kind: Pred(Term { span: Span { lo: 12, hi: 13 }, kind: Zero }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 13 }, kind: IsZero(RefCell { value: Term { span: Span { lo: 7, hi: 13 }, kind: Pred(RefCell { value: Term { span: Span { lo: 12, hi: 13 }, kind: Zero } }) } }) } })"#
             ]],
         );
         check(
             "if iszero pred 0 then false else true",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 37 }, kind: If(Term { span: Span { lo: 3, hi: 16 }, kind: IsZero(Term { span: Span { lo: 10, hi: 16 }, kind: Pred(Term { span: Span { lo: 15, hi: 16 }, kind: Zero }) }) }, Term { span: Span { lo: 22, hi: 27 }, kind: False }, Term { span: Span { lo: 33, hi: 37 }, kind: True }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 37 }, kind: If(RefCell { value: Term { span: Span { lo: 3, hi: 16 }, kind: IsZero(RefCell { value: Term { span: Span { lo: 10, hi: 16 }, kind: Pred(RefCell { value: Term { span: Span { lo: 15, hi: 16 }, kind: Zero } }) } }) } }, RefCell { value: Term { span: Span { lo: 22, hi: 27 }, kind: False } }, RefCell { value: Term { span: Span { lo: 33, hi: 37 }, kind: True } }) } })"#
             ]],
         );
     }
@@ -1006,18 +1078,18 @@ mod tests {
     fn parse_unit() {
         check(
             "unit",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 4 }, kind: Unit })"#]],
+            expect![[r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 4 }, kind: Unit } })"#]],
         );
         check(
             "λx:Nat.unit",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 7 }, kind: Nat }, Term { span: Span { lo: 8, hi: 12 }, kind: Unit }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 7 }, kind: Nat }, RefCell { value: Term { span: Span { lo: 8, hi: 12 }, kind: Unit } }) } })"#
             ]],
         );
         check(
             "λx:Unit.x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 10 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Unit }, Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 10 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Unit }, RefCell { value: Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) } }) } })"#
             ]],
         );
     }
@@ -1027,32 +1099,32 @@ mod tests {
         check(
             "true as Bool",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Ascription(Term { span: Span { lo: 0, hi: 4 }, kind: True }, Ty { span: Span { lo: 8, hi: 12 }, kind: Bool }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 12 }, kind: Ascription(RefCell { value: Term { span: Span { lo: 0, hi: 4 }, kind: True } }, Ty { span: Span { lo: 8, hi: 12 }, kind: Bool }) } })"#
             ]],
         );
         // Correct precedence
         check(
             "succ 0 as Nat",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 13 }, kind: Succ(Term { span: Span { lo: 5, hi: 13 }, kind: Ascription(Term { span: Span { lo: 5, hi: 6 }, kind: Zero }, Ty { span: Span { lo: 10, hi: 13 }, kind: Nat }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 13 }, kind: Succ(RefCell { value: Term { span: Span { lo: 5, hi: 13 }, kind: Ascription(RefCell { value: Term { span: Span { lo: 5, hi: 6 }, kind: Zero } }, Ty { span: Span { lo: 10, hi: 13 }, kind: Nat }) } }) } })"#
             ]],
         );
         check(
             "(succ 0) as Nat",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 15 }, kind: Ascription(Term { span: Span { lo: 0, hi: 8 }, kind: Succ(Term { span: Span { lo: 6, hi: 7 }, kind: Zero }) }, Ty { span: Span { lo: 12, hi: 15 }, kind: Nat }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 15 }, kind: Ascription(RefCell { value: Term { span: Span { lo: 0, hi: 8 }, kind: Succ(RefCell { value: Term { span: Span { lo: 6, hi: 7 }, kind: Zero } }) } }, Ty { span: Span { lo: 12, hi: 15 }, kind: Nat }) } })"#
             ]],
         );
         check(
             "λx:Bool.x as Bool",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 18 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 18 }, kind: Ascription(Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) }, Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 18 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 9, hi: 18 }, kind: Ascription(RefCell { value: Term { span: Span { lo: 9, hi: 10 }, kind: Variable(0) } }, Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }) } }) } })"#
             ]],
         );
         check(
             "(λx:Bool.x) as Bool → Bool",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 29 }, kind: Ascription(Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, Term { span: Span { lo: 10, hi: 11 }, kind: Variable(0) }) }, Ty { span: Span { lo: 16, hi: 29 }, kind: Abstraction(Ty { span: Span { lo: 16, hi: 20 }, kind: Bool }, Ty { span: Span { lo: 25, hi: 29 }, kind: Bool }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 29 }, kind: Ascription(RefCell { value: Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 5, hi: 9 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 10, hi: 11 }, kind: Variable(0) } }) } }, Ty { span: Span { lo: 16, hi: 29 }, kind: Abstraction(Ty { span: Span { lo: 16, hi: 20 }, kind: Bool }, Ty { span: Span { lo: 25, hi: 29 }, kind: Bool }) }) } })"#
             ]],
         );
     }
@@ -1067,26 +1139,26 @@ mod tests {
         check(
             "let x = true in x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 17 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 12 }, kind: True }, Term { span: Span { lo: 16, hi: 17 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 17 }, kind: Let(Var(Symbol("x")), RefCell { value: Term { span: Span { lo: 8, hi: 12 }, kind: True } }, RefCell { value: Term { span: Span { lo: 16, hi: 17 }, kind: Variable(0) } }) } })"#
             ]],
         );
         check(
             "let not = λb:Bool.if b then false else true in not true",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 56 }, kind: Let(Var(Symbol("not")), Term { span: Span { lo: 10, hi: 44 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, Term { span: Span { lo: 19, hi: 44 }, kind: If(Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) }, Term { span: Span { lo: 29, hi: 34 }, kind: False }, Term { span: Span { lo: 40, hi: 44 }, kind: True }) }) }, Term { span: Span { lo: 48, hi: 56 }, kind: Application(Term { span: Span { lo: 48, hi: 51 }, kind: Variable(0) }, Term { span: Span { lo: 52, hi: 56 }, kind: True }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 56 }, kind: Let(Var(Symbol("not")), RefCell { value: Term { span: Span { lo: 10, hi: 44 }, kind: Abstraction(Symbol("b"), Ty { span: Span { lo: 14, hi: 18 }, kind: Bool }, RefCell { value: Term { span: Span { lo: 19, hi: 44 }, kind: If(RefCell { value: Term { span: Span { lo: 22, hi: 23 }, kind: Variable(0) } }, RefCell { value: Term { span: Span { lo: 29, hi: 34 }, kind: False } }, RefCell { value: Term { span: Span { lo: 40, hi: 44 }, kind: True } }) } }) } }, RefCell { value: Term { span: Span { lo: 48, hi: 56 }, kind: Application(RefCell { value: Term { span: Span { lo: 48, hi: 51 }, kind: Variable(0) } }, RefCell { value: Term { span: Span { lo: 52, hi: 56 }, kind: True } }) } }) } })"#
             ]],
         );
         check(
             "let x = let y = false in y in x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 31 }, kind: Let(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 26 }, kind: Let(Var(Symbol("y")), Term { span: Span { lo: 16, hi: 21 }, kind: False }, Term { span: Span { lo: 25, hi: 26 }, kind: Variable(0) }) }, Term { span: Span { lo: 30, hi: 31 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 31 }, kind: Let(Var(Symbol("x")), RefCell { value: Term { span: Span { lo: 8, hi: 26 }, kind: Let(Var(Symbol("y")), RefCell { value: Term { span: Span { lo: 16, hi: 21 }, kind: False } }, RefCell { value: Term { span: Span { lo: 25, hi: 26 }, kind: Variable(0) } }) } }, RefCell { value: Term { span: Span { lo: 30, hi: 31 }, kind: Variable(0) } }) } })"#
             ]],
         );
 
         check(
             "let {x} = {1} in x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 18 }, kind: Let(Record({Symbol("1"): Var(Symbol("x"))}, [Symbol("1")]), Term { span: Span { lo: 10, hi: 13 }, kind: Record({Symbol("1"): Term { span: Span { lo: 11, hi: 12 }, kind: Succ(Term { span: Span { lo: 11, hi: 12 }, kind: Zero }) }}, [Symbol("1")]) }, Term { span: Span { lo: 17, hi: 18 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 18 }, kind: Let(Record({Symbol("1"): Var(Symbol("x"))}, [Symbol("1")]), RefCell { value: Term { span: Span { lo: 10, hi: 13 }, kind: Record({Symbol("1"): RefCell { value: Term { span: Span { lo: 11, hi: 12 }, kind: Succ(RefCell { value: Term { span: Span { lo: 11, hi: 12 }, kind: Zero } }) } }}, [Symbol("1")]) } }, RefCell { value: Term { span: Span { lo: 17, hi: 18 }, kind: Variable(0) } }) } })"#
             ]],
         );
         check_stringify(
@@ -1098,14 +1170,14 @@ mod tests {
         check_env(
             "let x = 3; x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Application(Term { span: Span { lo: 0, hi: 10 }, kind: VariableDefinition(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 9 }, kind: Succ(Term { span: Span { lo: 8, hi: 9 }, kind: Succ(Term { span: Span { lo: 8, hi: 9 }, kind: Succ(Term { span: Span { lo: 8, hi: 9 }, kind: Zero }) }) }) }) }, Term { span: Span { lo: 11, hi: 12 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 12 }, kind: Application(RefCell { value: Term { span: Span { lo: 0, hi: 10 }, kind: VariableDefinition(Var(Symbol("x")), RefCell { value: Term { span: Span { lo: 8, hi: 9 }, kind: Succ(RefCell { value: Term { span: Span { lo: 8, hi: 9 }, kind: Succ(RefCell { value: Term { span: Span { lo: 8, hi: 9 }, kind: Succ(RefCell { value: Term { span: Span { lo: 8, hi: 9 }, kind: Zero } }) } }) } }) } }) } }, RefCell { value: Term { span: Span { lo: 11, hi: 12 }, kind: Variable(0) } }) } })"#
             ]],
             &mut env,
         );
         check_env(
             "let a = 3; a",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 12 }, kind: Application(Term { span: Span { lo: 0, hi: 10 }, kind: VariableDefinition(Var(Symbol("a")), Term { span: Span { lo: 8, hi: 9 }, kind: Succ(Term { span: Span { lo: 8, hi: 9 }, kind: Succ(Term { span: Span { lo: 8, hi: 9 }, kind: Succ(Term { span: Span { lo: 8, hi: 9 }, kind: Zero }) }) }) }) }, Term { span: Span { lo: 11, hi: 12 }, kind: Variable(1) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 12 }, kind: Application(RefCell { value: Term { span: Span { lo: 0, hi: 10 }, kind: VariableDefinition(Var(Symbol("a")), RefCell { value: Term { span: Span { lo: 8, hi: 9 }, kind: Succ(RefCell { value: Term { span: Span { lo: 8, hi: 9 }, kind: Succ(RefCell { value: Term { span: Span { lo: 8, hi: 9 }, kind: Succ(RefCell { value: Term { span: Span { lo: 8, hi: 9 }, kind: Zero } }) } }) } }) } }) } }, RefCell { value: Term { span: Span { lo: 11, hi: 12 }, kind: Variable(1) } }) } })"#
             ]],
             &mut env,
         );
@@ -1134,12 +1206,14 @@ mod tests {
     fn parse_record() {
         check(
             "{}",
-            expect![[r#"Ok(Term { span: Span { lo: 0, hi: 2 }, kind: Record({}, []) })"#]],
+            expect![[
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 2 }, kind: Record({}, []) } })"#
+            ]],
         );
         check(
             "{true}",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): RefCell { value: Term { span: Span { lo: 1, hi: 5 }, kind: True } }}, [Symbol("1")]) } })"#
             ]],
         );
         check_stringify(
@@ -1159,7 +1233,7 @@ mod tests {
         check(
             "{0,}",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 4 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 2 }, kind: Zero }}, [Symbol("1")]) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 4 }, kind: Record({Symbol("1"): RefCell { value: Term { span: Span { lo: 1, hi: 2 }, kind: Zero } }}, [Symbol("1")]) } })"#
             ]],
         );
 
@@ -1175,7 +1249,7 @@ mod tests {
         check(
             "λt:{}.t",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Abstraction(Symbol("t"), Ty { span: Span { lo: 4, hi: 6 }, kind: Record({}, []) }, Term { span: Span { lo: 7, hi: 8 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 8 }, kind: Abstraction(Symbol("t"), Ty { span: Span { lo: 4, hi: 6 }, kind: Record({}, []) }, RefCell { value: Term { span: Span { lo: 7, hi: 8 }, kind: Variable(0) } }) } })"#
             ]],
         );
     }
@@ -1196,14 +1270,14 @@ mod tests {
         check(
             "{true}.1",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) }, Symbol("1")) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 8 }, kind: Projection(RefCell { value: Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): RefCell { value: Term { span: Span { lo: 1, hi: 5 }, kind: True } }}, [Symbol("1")]) } }, Symbol("1")) } })"#
             ]],
         );
         check_stringify("{} as {Bool, Bool}.1 as Bool", expect![[r#"{}.1"#]]);
         check(
             "{true}.1 as Bool",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 16 }, kind: Ascription(Term { span: Span { lo: 0, hi: 8 }, kind: Projection(Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): Term { span: Span { lo: 1, hi: 5 }, kind: True }}, [Symbol("1")]) }, Symbol("1")) }, Ty { span: Span { lo: 12, hi: 16 }, kind: Bool }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 16 }, kind: Ascription(RefCell { value: Term { span: Span { lo: 0, hi: 8 }, kind: Projection(RefCell { value: Term { span: Span { lo: 0, hi: 6 }, kind: Record({Symbol("1"): RefCell { value: Term { span: Span { lo: 1, hi: 5 }, kind: True } }}, [Symbol("1")]) } }, Symbol("1")) } }, Ty { span: Span { lo: 12, hi: 16 }, kind: Bool }) } })"#
             ]],
         );
         check_stringify(
@@ -1221,13 +1295,13 @@ mod tests {
         check(
             "let x = true; x",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 15 }, kind: Application(Term { span: Span { lo: 0, hi: 13 }, kind: VariableDefinition(Var(Symbol("x")), Term { span: Span { lo: 8, hi: 12 }, kind: True }) }, Term { span: Span { lo: 14, hi: 15 }, kind: Variable(0) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 15 }, kind: Application(RefCell { value: Term { span: Span { lo: 0, hi: 13 }, kind: VariableDefinition(Var(Symbol("x")), RefCell { value: Term { span: Span { lo: 8, hi: 12 }, kind: True } }) } }, RefCell { value: Term { span: Span { lo: 14, hi: 15 }, kind: Variable(0) } }) } })"#
             ]],
         );
         check(
             "type UU = Unit → Unit;",
             expect![[
-                r#"Ok(Term { span: Span { lo: 0, hi: 24 }, kind: TypeDefinition(Symbol("UU"), Ty { span: Span { lo: 10, hi: 23 }, kind: Abstraction(Ty { span: Span { lo: 10, hi: 14 }, kind: Unit }, Ty { span: Span { lo: 19, hi: 23 }, kind: Unit }) }) })"#
+                r#"Ok(RefCell { value: Term { span: Span { lo: 0, hi: 24 }, kind: TypeDefinition(Symbol("UU"), Ty { span: Span { lo: 10, hi: 23 }, kind: Abstraction(Ty { span: Span { lo: 10, hi: 14 }, kind: Unit }, Ty { span: Span { lo: 19, hi: 23 }, kind: Unit }) }) } })"#
             ]],
         );
     }
@@ -1323,5 +1397,20 @@ mod tests {
         check_stringify("tail[Bool] nil[Bool]", expect![[r#"tail[Bool] nil[Bool]"#]]);
         check_stringify("λl:List Nat.l", expect![[r#"λl:List Nat.l"#]]);
         check_stringify("λf:List Nat → Nat.f", expect![[r#"λf:List Nat → Nat.f"#]]);
+    }
+
+    #[test]
+    fn parse_references() {
+        check_stringify("ref 0", expect![[r#"ref 0"#]]);
+        check_stringify("let a = ref 3; !a", expect![[r#"let a = ref 3; !a"#]]);
+        check_stringify(
+            "let a = ref 3; a := 4",
+            expect![[r#"let a = ref 3; a := 4"#]],
+        );
+        check_stringify("λa:Ref Nat.!a", expect![[r#"λa:Ref Nat.!a"#]]);
+        check_stringify(
+            "let a = ref 3; a := 4; !a",
+            expect![[r#"(λ_:Unit.!a) (let a = ref 3; a := 4)"#]],
+        );
     }
 }
