@@ -126,7 +126,7 @@ impl<'a> Env<'a> {
         let s = s.into();
         let mut val = self.insert_if_not_exists(s);
         if val.term.is_some() {
-            Err(error!("Variable `{}` already bound", s; term.borrow().span))
+            Err(error!("Variable `{}` already bound", s; term.span))
         } else {
             val.term = Some(Rc::clone(term));
             Ok(())

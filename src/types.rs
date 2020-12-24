@@ -137,35 +137,35 @@ impl fmt::Display for TyKind {
 }
 
 pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> {
-    match type_t.borrow().kind {
-        TermKind::True => Ok(TY![bool; type_t.borrow().span]),
-        TermKind::False => Ok(TY![bool; type_t.borrow().span]),
-        TermKind::Zero => Ok(TY![nat; type_t.borrow().span]),
-        TermKind::Unit => Ok(TY![unit; type_t.borrow().span]),
+    match type_t.kind {
+        TermKind::True => Ok(TY![bool; type_t.span]),
+        TermKind::False => Ok(TY![bool; type_t.span]),
+        TermKind::Zero => Ok(TY![nat; type_t.span]),
+        TermKind::Unit => Ok(TY![unit; type_t.span]),
         TermKind::Ascription(ref t, ref ty) => match type_of(t, env, tyenv)?.as_ref() {
             t if cmp_ty(&t.kind, &ty.kind, &tyenv) => Ok(ty.clone()),
             t => Err(error!("Expected type `{}`, got `{}`", ty, t; t.span)),
         },
         TermKind::Succ(ref t) | TermKind::Pred(ref t) => match &type_of(t, env, tyenv)?.as_ref() {
-            t if cmp_ty(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![nat; type_t.borrow().span]),
+            t if cmp_ty(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![nat; type_t.span]),
             t => Err(error!("Expected type `Nat`, got `{}`", t; t.span)),
         },
         TermKind::IsZero(ref t) => match &type_of(t, env, tyenv)?.as_ref() {
-            t if cmp_ty(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![bool; type_t.borrow().span]),
+            t if cmp_ty(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![bool; type_t.span]),
             t => Err(error!("Expected type `Nat`, got `{}`", t; t.span)),
         },
         TermKind::Abstraction(v, ref ty, ref body) => {
             let mut env = Env::with_parent(&env);
             env.insert_type(v, &ty)?;
-            type_of(body, &mut env, tyenv).map(|body_ty| TY![abs ty, body_ty; type_t.borrow().span])
+            type_of(body, &mut env, tyenv).map(|body_ty| TY![abs ty, body_ty; type_t.span])
         }
         TermKind::Variable(idx) => env
             .get_type_from_index(idx)
-            .ok_or_else(|| error!("Invalid de Bruijn index {}", idx; type_t.borrow().span)),
+            .ok_or_else(|| error!("Invalid de Bruijn index {}", idx; type_t.span)),
         TermKind::Application(ref t1, ref t2) => {
             // If t1 is `let x = t;` or `type A = T;`, we can ignore the result
             // of evaluating it (i.e. Unit) and just return `t2`.
-            let ignore_t1 = t1.borrow().is_definition();
+            let ignore_t1 = t1.is_definition();
             let t1_ty = type_of(t1, env, tyenv)?;
             let t2_ty = type_of(t2, env, tyenv)?;
 
@@ -174,11 +174,11 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                     if cmp_ty(&t11_ty.kind, &t2_ty.kind, &tyenv) {
                         Ok(t12_ty.clone())
                     } else {
-                        Err(error!("Expected type `{}`, got `{}`", t11_ty, t2_ty; t2.borrow().span))
+                        Err(error!("Expected type `{}`, got `{}`", t11_ty, t2_ty; t2.span))
                     }
                 }
                 _ if ignore_t1 => Ok(t2_ty),
-                _ => Err(error!("Expected an abstraction, got `{}`", t1_ty; t1.borrow().span)),
+                _ => Err(error!("Expected an abstraction, got `{}`", t1_ty; t1.span)),
             }
         }
         TermKind::If(ref cond, ref then, ref else_b) => {
@@ -192,18 +192,16 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                     } else {
                         Err(error!(
                             "Arms of conditional have different types: `{}`, and `{}`",
-                            then_ty, else_ty; type_t.borrow().span
+                            then_ty, else_ty; type_t.span
                         ))
                     }
                 }
-                ty => Err(
-                    error!("Guard conditional expects a Bool, got `{}`", ty; cond.borrow().span),
-                ),
+                ty => Err(error!("Guard conditional expects a Bool, got `{}`", ty; cond.span)),
             }
         }
         TermKind::Let(ref p, ref t1, ref t2) => {
             let t1 = type_of(t1, env, tyenv)?;
-            let mut env = resolve_match(p, &t1, &env, type_t.borrow().span)?;
+            let mut env = resolve_match(p, &t1, &env, type_t.span)?;
             type_of(t2, &mut env, tyenv)
         }
         TermKind::Record(ref elems, ref keys) => keys
@@ -214,7 +212,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             .map(|elems| {
                 Rc::new(Ty {
                     kind: TyKind::Record(elems, keys.clone()),
-                    span: type_t.borrow().span,
+                    span: type_t.span,
                 })
             }),
         TermKind::Projection(ref record, elem) => {
@@ -224,7 +222,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                     Some(elem) => Ok(elem.clone()),
                     None => Err(error!(
                         "The element `{}` does not exist on the record `{}`",
-                        elem, record; type_t.borrow().span
+                        elem, record; type_t.span
                     )),
                 },
                 _ => Err(error!("Only a record can be projected, got `{}`", record; record.span)),
@@ -238,16 +236,16 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                     e
                 }
             }?;
-            resolve_match_mut(p, &ty, env, type_t.borrow().span)?;
-            Ok(TY![unit; type_t.borrow().span])
+            resolve_match_mut(p, &ty, env, type_t.span)?;
+            Ok(TY![unit; type_t.span])
         }
         TermKind::TypeDefinition(v, ref ty) => {
             tyenv.insert(v, ty)?;
-            Ok(TY![unit; type_t.borrow().span])
+            Ok(TY![unit; type_t.span])
         }
         TermKind::Variant(label, ref term, ref ty) => {
             let term_ty = type_of(term, env, tyenv)?;
-            match &eval_ty(&ty, &tyenv).kind {
+            match eval_ty(&ty, &tyenv).kind {
                 TyKind::Variant(ref variants, _) => match variants.get(&label) {
                     Some(expected_ty) => {
                         if cmp_ty(&term_ty.kind, &expected_ty.kind, &tyenv) {
@@ -259,7 +257,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                         }
                     }
                     None => Err(
-                        error!("The label `{}` is not a variant of `{}`", label, ty; type_t.borrow().span),
+                        error!("The label `{}` is not a variant of `{}`", label, ty; type_t.span),
                     ),
                 },
                 _ => Err(error!("Expected a variant type, got `{}`", ty; ty.span)),
@@ -281,7 +279,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                     Some(var_ty) => var_ty,
                     None => {
                         return Err(
-                            error!("The label `{}` is not a variant of `{}`", variant, value_ty; type_t.borrow().span),
+                            error!("The label `{}` is not a variant of `{}`", variant, value_ty; type_t.span),
                         )
                     }
                 };
@@ -303,9 +301,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             if branches.len() < variants.len() {
                 for variant in variants.keys() {
                     if branches.get(variant).is_none() {
-                        return Err(
-                            error!("The label `{}` is not covered", variant; type_t.borrow().span),
-                        );
+                        return Err(error!("The label `{}` is not covered", variant; type_t.span));
                     }
                 }
             }
@@ -315,23 +311,21 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
         }
         TermKind::Fix(ref t) => {
             let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
-            match &t_ty.kind {
-                TyKind::Abstraction(par_ty, ret_ty) => {
+            match t_ty.kind {
+                TyKind::Abstraction(ref par_ty, ref ret_ty) => {
                     if cmp_ty(&par_ty.kind, &ret_ty.kind, tyenv) {
                         Ok(Rc::clone(ret_ty))
                     } else {
                         Err(
-                            error!("Fix expects return type to be `{}`, got `{}", par_ty, ret_ty; type_t.borrow().span),
+                            error!("Fix expects return type to be `{}`, got `{}", par_ty, ret_ty; type_t.span),
                         )
                     }
                 }
-                _ => {
-                    Err(error!("Fix expects an abstraction, got `{}`", t_ty; type_t.borrow().span))
-                }
+                _ => Err(error!("Fix expects an abstraction, got `{}`", t_ty; type_t.span)),
             }
         }
         TermKind::Nil(ref ty) => Ok(Rc::new(Ty {
-            span: type_t.borrow().span,
+            span: type_t.span,
             kind: TyKind::List(Rc::clone(ty)),
         })),
         TermKind::Cons(ref t1, ref t2, ref ty) => {
@@ -339,93 +333,93 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             let t2_ty = eval_ty(&type_of(t2, env, tyenv)?, &tyenv);
 
             if !cmp_ty(&t1_ty.kind, &ty.kind, tyenv) {
-                return Err(error!("Expected type `{}`, got `{}", ty, t1_ty; t1.borrow().span));
+                return Err(error!("Expected type `{}`, got `{}", ty, t1_ty; t1.span));
             }
 
-            match &t2_ty.kind {
-                TyKind::List(t2_ty) if cmp_ty(&t2_ty.kind, &ty.kind, tyenv) => Ok(Rc::new(Ty {
-                    span: type_t.borrow().span,
-                    kind: TyKind::List(Rc::clone(ty)),
-                })),
-                t2_ty => {
-                    Err(error!("Expected type `List {}`, got `{}`", ty, t2_ty; t2.borrow().span))
+            match t2_ty.kind {
+                TyKind::List(ref t2_ty) if cmp_ty(&t2_ty.kind, &ty.kind, tyenv) => {
+                    Ok(Rc::new(Ty {
+                        span: type_t.span,
+                        kind: TyKind::List(Rc::clone(ty)),
+                    }))
                 }
+                _ => Err(error!("Expected type `List {}`, got `{}`", ty, t2_ty; t2.span)),
             }
         }
         TermKind::IsNil(ref t, ref ty) => {
             let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
 
-            match &t_ty.kind {
-                TyKind::List(t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => {
-                    Ok(TY![bool; type_t.borrow().span])
+            match t_ty.kind {
+                TyKind::List(ref t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => {
+                    Ok(TY![bool; type_t.span])
                 }
-                _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.borrow().span)),
+                _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.span)),
             }
         }
         TermKind::Head(ref t, ref ty) => {
             let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
 
-            match &t_ty.kind {
-                TyKind::List(t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => Ok(Rc::clone(ty)),
-                _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.borrow().span)),
+            match t_ty.kind {
+                TyKind::List(ref t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => Ok(Rc::clone(ty)),
+                _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.span)),
             }
         }
         TermKind::Tail(ref t, ref ty) => {
             let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
 
-            match &t_ty.kind {
-                TyKind::List(t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => Ok(Rc::new(Ty {
-                    span: type_t.borrow().span,
+            match t_ty.kind {
+                TyKind::List(ref t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => Ok(Rc::new(Ty {
+                    span: type_t.span,
                     kind: TyKind::List(Rc::clone(ty)),
                 })),
-                _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.borrow().span)),
+                _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.span)),
             }
         }
         TermKind::Ref(ref t) => {
             let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
             Ok(Rc::new(Ty {
-                span: type_t.borrow().span,
+                span: type_t.span,
                 kind: TyKind::Ref(t_ty),
             }))
         }
         TermKind::Location(ref t) => {
             let t_ty = eval_ty(&type_of(&t.borrow(), env, tyenv)?, &tyenv);
             Ok(Rc::new(Ty {
-                span: type_t.borrow().span,
+                span: type_t.span,
                 kind: TyKind::Ref(t_ty),
             }))
         }
         TermKind::Deref(ref t) => {
             let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
-            match &t_ty.kind {
-                TyKind::Ref(t) => Ok(Rc::clone(t)),
-                _ => Err(error!("Cannot dereference type `{}`", t_ty; type_t.borrow().span)),
+            match t_ty.kind {
+                TyKind::Ref(ref t) => Ok(Rc::clone(t)),
+                _ => Err(error!("Cannot dereference type `{}`", t_ty; type_t.span)),
             }
         }
         TermKind::RefAssign(ref t1, ref t2) => {
             let t1 = eval_ty(&type_of(t1, env, tyenv)?, &tyenv);
             let t2 = eval_ty(&type_of(t2, env, tyenv)?, &tyenv);
 
-            match &t1.kind {
-                TyKind::Ref(t1_ty) => {
+            match t1.kind {
+                TyKind::Ref(ref t1_ty) => {
                     if cmp_ty(&t1_ty.kind, &t2.kind, tyenv) {
                         Ok(Rc::new(Ty {
-                            span: type_t.borrow().span,
+                            span: type_t.span,
                             kind: TyKind::Unit,
                         }))
                     } else {
-                        Err(error!("Cannot assign `{}` to type `{}", t2, t1; type_t.borrow().span))
+                        Err(error!("Cannot assign `{}` to type `{}", t2, t1; type_t.span))
                     }
                 }
-                _ => Err(error!("Expected a reference, got `{}`", t1; type_t.borrow().span)),
+                _ => Err(error!("Expected a reference, got `{}`", t1; type_t.span)),
             }
         }
     }
 }
 
 pub fn eval_ty(t1: &LTy, tyenv: &TyEnv) -> LTy {
-    match &t1.as_ref().kind {
-        TyKind::Base(name) => match tyenv.get(*name) {
+    match t1.as_ref().kind {
+        TyKind::Base(ref name) => match tyenv.get(*name) {
             Some(ref ty) => eval_ty(ty, tyenv),
             None => Rc::clone(t1),
         },
