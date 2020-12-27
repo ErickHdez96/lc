@@ -340,9 +340,12 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
 
             match branches.get(&variant) {
                 Some((_, body)) => eval_(&term_subst_top(term, body)?, env),
-                None => {
-                    Err(error!("There was an error during type checking, invalid label"; term.span))
-                }
+                None => match branches.get(&Symbol::from("_")) {
+                    Some((_, body)) => eval_(&term_subst_top(term, body)?, env),
+                    None => Err(
+                        error!("There was an error during type checking, invalid label"; term.span),
+                    ),
+                },
             }
         }
         TermKind::Fix(ref t) => {
@@ -807,12 +810,12 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
                 .map(|variant| {
                     let (x, term) = branches.get(&variant).unwrap();
                     let (x, env) = new_name(*x, &env);
-                    Ok(format!(
-                        "<{}={}> ⇒ {}",
-                        variant,
-                        x,
-                        term_to_string(term, &env)?
-                    ))
+                    let case_output = if variant.as_str() == "_" {
+                        String::from("_")
+                    } else {
+                        format!("<{}={}>", variant, x)
+                    };
+                    Ok(format!("{} ⇒ {}", case_output, term_to_string(term, &env)?))
                 })
                 .collect::<Result<Vec<_>>>()?
                 .join(" | "),
@@ -1323,7 +1326,7 @@ mod tests {
             &mut tyenv,
         );
         check_env(
-            "let is_some = λs:MaybeNat.case s of <some=_> => true | <none=_> => false;",
+            "let is_some = λs:MaybeNat.case s of <some=_> => true | _ => false;",
             expect![[r#"unit"#]],
             &mut env,
             &mut tyenv,
@@ -1357,6 +1360,27 @@ mod tests {
                                 | <none=u> => <none=u> as MaybeNat)
               <none=unit> as MaybeNat",
             expect![[r#"<none=unit> as MaybeNat"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "(λm:MaybeNat. case m of _ => true) <none=unit> as MaybeNat",
+            expect![["true"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "(λm:MaybeNat. case m of _ => true) <none=unit> as MaybeNat",
+            expect![["true"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "let a = 3 in case <some=0> as MaybeNat of _ => a",
+            expect![["3"]],
             &mut env,
             &mut tyenv,
         );

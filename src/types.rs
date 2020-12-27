@@ -263,7 +263,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                 _ => Err(error!("Expected a variant type, got `{}`", ty; ty.span)),
             }
         }
-        TermKind::Case(ref value, ref branches, _) => {
+        TermKind::Case(ref value, ref branches, ref keys) => {
             let value_ty = type_of(value, env, tyenv)?;
             let evald_value_ty = eval_ty(&value_ty, &tyenv);
             let variants = if let TyKind::Variant(ref variants, _) = evald_value_ty.kind {
@@ -271,12 +271,24 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             } else {
                 return Err(error!("Expected a variant type, got `{}`", value_ty; value_ty.span));
             };
+            let mut wildcard_found = false;
 
             let mut ret_ty: Option<LTy> = None;
 
+            for key in keys {
+                if wildcard_found {
+                    return Err(error!("Unreachable pattern"; type_t.span));
+                }
+                if key.as_str() == "_" {
+                    wildcard_found = true;
+                }
+            }
+
             for (variant, (var, term)) in branches {
-                let var_ty = match variants.get(variant) {
-                    Some(var_ty) => var_ty,
+                let mut env = Env::with_parent(&env);
+                match variants.get(variant) {
+                    Some(var_ty) => env.insert_type(*var, var_ty)?,
+                    None if variant.as_str() == "_" => {}
                     None => {
                         return Err(
                             error!("The label `{}` is not a variant of `{}`", variant, value_ty; type_t.span),
@@ -284,8 +296,6 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                     }
                 };
 
-                let mut env = Env::with_parent(&env);
-                env.insert_type(*var, var_ty)?;
                 let term_ty = type_of(term, &mut env, tyenv)?;
                 if let Some(ret_ty) = &ret_ty {
                     if !cmp_ty(&ret_ty.kind, &term_ty.kind, &tyenv) {
@@ -298,7 +308,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                 }
             }
 
-            if branches.len() < variants.len() {
+            if branches.len() < variants.len() && !wildcard_found {
                 for variant in variants.keys() {
                     if branches.get(variant).is_none() {
                         return Err(error!("The label `{}` is not covered", variant; type_t.span));
@@ -1067,6 +1077,24 @@ mod tests {
             &mut env,
             &mut tyenv,
         );
+
+        check_env(
+            r#"(λn:MaybeNat.case n of
+                                <some=_> => true
+                                | _ => false)
+                <none=unit> as MaybeNat"#,
+            expect![[r#"Bool"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            r#"(λn:MaybeNat.case n of _ => true)
+                <none=unit> as MaybeNat"#,
+            expect![[r#"Bool"#]],
+            &mut env,
+            &mut tyenv,
+        );
     }
 
     #[test]
@@ -1097,6 +1125,13 @@ mod tests {
         check_parse_error_env(
             "case <none=unit> as MaybeNat of <some=_> => unit",
             expect![[r#"[0-48]TypeError: The label `none` is not covered"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error_env(
+            "case <none=unit> as MaybeNat of _ => false | <some=_> => true",
+            expect![[r#"[0-61]TypeError: Unreachable pattern"#]],
             &mut env,
             &mut tyenv,
         );

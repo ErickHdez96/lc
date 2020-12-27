@@ -756,11 +756,17 @@ impl<'a> Parser<'a> {
         let mut last_span;
 
         loop {
-            self.eat(TokenKind::Lt)?;
-            let (kind, _) = self.eat_ident(false)?;
-            self.eat(TokenKind::Assign)?;
-            let (var, var_span) = self.eat_ident(true)?;
-            self.eat(TokenKind::Gt)?;
+            let (kind, var, var_span) = if self.current() == TokenKind::Wildcard {
+                let (t, span) = self.eat_ident(true)?;
+                (t, t, span)
+            } else {
+                self.eat(TokenKind::Lt)?;
+                let (kind, _) = self.eat_ident(false)?;
+                self.eat(TokenKind::Assign)?;
+                let (var, var_span) = self.eat_ident(true)?;
+                self.eat(TokenKind::Gt)?;
+                (kind, var, var_span)
+            };
             self.eat(TokenKind::FatArrow)?;
             let mut env = Env::with_parent(&env);
             env.insert_symbol(var, var_span)?;
@@ -1341,6 +1347,16 @@ mod tests {
             expect![[
                 r#"λb:MaybeNat.case b of <some=n> ⇒ <some=iszero n> as MaybeBool | <none=_> ⇒ <none=unit> as MaybeBool"#
             ]],
+        );
+
+        check_stringify(
+            r#"
+            λb:MaybeNat.
+                case b of
+                    <some=_> => true
+                    | _ => false
+            "#,
+            expect![[r#"λb:MaybeNat.case b of <some=_> ⇒ true | _ ⇒ false"#]],
         );
     }
 
