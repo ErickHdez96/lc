@@ -250,12 +250,10 @@ impl<'a> Parser<'a> {
                 let (ident, _) = self.eat_ident(false)?;
                 self.eat(TokenKind::Assign)?;
                 let t = self.parse_application_or_var(false, env)?;
-                self.eat(TokenKind::Gt)?;
-                self.eat(TokenKind::As)?;
-                let ty = self.parse_type(env)?;
+                let end = self.eat(TokenKind::Gt)?.span;
                 Ok(Rc::new(Term {
-                    span: start.with_hi(ty.span.hi),
-                    kind: TermKind::Variant(ident, t, ty),
+                    span: start.with_hi(end.hi),
+                    kind: TermKind::Variant(ident, t),
                 }))
             }
             TokenKind::Fix => {
@@ -624,6 +622,10 @@ impl<'a> Parser<'a> {
                 ty
             }
             TokenKind::Ident => match self.next() {
+                t if t.text == "Top" => Rc::new(Ty {
+                    kind: TyKind::Top,
+                    span: t.span,
+                }),
                 t if t.text == "Bool" => Rc::new(Ty {
                     kind: TyKind::Bool,
                     span: t.span,
@@ -1316,24 +1318,17 @@ mod tests {
             "type MaybeBool = <some:Bool, none:Unit>;",
             expect![[r#"type MaybeBool = <some:Bool, none:Unit>;"#]],
         );
-        check_stringify(
-            "<some=true> as MaybeBool",
-            expect![[r#"<some=true> as MaybeBool"#]],
-        );
-        check_stringify(
-            "<none=unit> as MaybeBool",
-            expect![[r#"<none=unit> as MaybeBool"#]],
-        );
-        check_stringify(
-            "<some=iszero 0> as MaybeBool",
-            expect![[r#"<some=iszero 0> as MaybeBool"#]],
-        );
+        check_stringify("<some=true>", expect![[r#"<some=true>"#]]);
+        check_stringify("<none=unit>", expect![[r#"<none=unit>"#]]);
+        check_stringify("<some=iszero 0>", expect![[r#"<some=iszero 0>"#]]);
     }
 
     #[test]
     fn error_parse_variant() {
-        check_error("<some=true> as", "Expected a type, got `<eof>`");
-        check_error("<some=true>", "Expected a `as`, got `<eof>`");
+        check_error("<some=true", "Expected a `>`, got `<eof>`");
+        check_error("<some=", "Expected a term, got `<eof>`");
+        check_error("<some", "Expected a `=`, got `<eof>`");
+        check_error("<", "Expected an identifier, got `<eof>`");
     }
 
     #[test]
@@ -1345,7 +1340,7 @@ mod tests {
                        | <none=_> => <none=unit> as MaybeBool
             "#,
             expect![[
-                r#"λb:MaybeNat.case b of <some=n> ⇒ <some=iszero n> as MaybeBool | <none=_> ⇒ <none=unit> as MaybeBool"#
+                r#"λb:MaybeNat.case b of <some=n> ⇒ <some=iszero n> | <none=_> ⇒ <none=unit>"#
             ]],
         );
 

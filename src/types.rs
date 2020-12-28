@@ -28,6 +28,8 @@ pub struct Ty {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TyKind {
+    /// Top
+    Top,
     /// Bool
     Bool,
     /// Nat
@@ -96,6 +98,7 @@ impl fmt::Display for TyKind {
         }
 
         match self {
+            TyKind::Top => write!(f, "Top"),
             TyKind::Bool => write!(f, "Bool"),
             TyKind::Nat => write!(f, "Nat"),
             TyKind::Base(s) => s.fmt(f),
@@ -143,15 +146,15 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
         TermKind::Zero => Ok(TY![nat; type_t.span]),
         TermKind::Unit => Ok(TY![unit; type_t.span]),
         TermKind::Ascription(ref t, ref ty) => match type_of(t, env, tyenv)?.as_ref() {
-            t if cmp_ty(&t.kind, &ty.kind, &tyenv) => Ok(ty.clone()),
+            t if is_subtype(&t.kind, &ty.kind, &tyenv) => Ok(ty.clone()),
             t => Err(error!("Expected type `{}`, got `{}`", ty, t; t.span)),
         },
         TermKind::Succ(ref t) | TermKind::Pred(ref t) => match &type_of(t, env, tyenv)?.as_ref() {
-            t if cmp_ty(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![nat; type_t.span]),
+            t if is_subtype(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![nat; type_t.span]),
             t => Err(error!("Expected type `Nat`, got `{}`", t; t.span)),
         },
         TermKind::IsZero(ref t) => match &type_of(t, env, tyenv)?.as_ref() {
-            t if cmp_ty(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![bool; type_t.span]),
+            t if is_subtype(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![bool; type_t.span]),
             t => Err(error!("Expected type `Nat`, got `{}`", t; t.span)),
         },
         TermKind::Abstraction(v, ref ty, ref body) => {
@@ -171,7 +174,10 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
 
             match t1_ty.as_ref().kind {
                 TyKind::Abstraction(ref t11_ty, ref t12_ty) => {
-                    if cmp_ty(&t11_ty.kind, &t2_ty.kind, &tyenv) {
+                    // T1 <: S1     S2 <: T2
+                    // ---------------------
+                    //  S1 → S2 <: T1 → T2
+                    if is_subtype(&t2_ty.kind, &t11_ty.kind, &tyenv) {
                         Ok(t12_ty.clone())
                     } else {
                         Err(error!("Expected type `{}`, got `{}`", t11_ty, t2_ty; t2.span))
@@ -187,7 +193,9 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                     let then_ty = type_of(then, env, tyenv)?;
                     let else_ty = type_of(else_b, env, tyenv)?;
 
-                    if cmp_ty(&then_ty.kind, &else_ty.kind, &tyenv) {
+                    if is_subtype(&then_ty.kind, &else_ty.kind, &tyenv)
+                        && is_subtype(&else_ty.kind, &then_ty.kind, &tyenv)
+                    {
                         Ok(else_ty)
                     } else {
                         Err(error!(
@@ -236,32 +244,27 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                     e
                 }
             }?;
-            resolve_match_mut(p, &ty, env, type_t.span)?;
-            Ok(TY![unit; type_t.span])
+
+            if let Err(e) = resolve_match_mut(p, &ty, env, type_t.span) {
+                remove_pattern_matches(p, env);
+                Err(e)
+            } else {
+                Ok(TY![unit; type_t.span])
+            }
         }
         TermKind::TypeDefinition(v, ref ty) => {
             tyenv.insert(v, ty)?;
             Ok(TY![unit; type_t.span])
         }
-        TermKind::Variant(label, ref term, ref ty) => {
+        TermKind::Variant(label, ref term) => {
             let term_ty = type_of(term, env, tyenv)?;
-            match eval_ty(&ty, &tyenv).kind {
-                TyKind::Variant(ref variants, _) => match variants.get(&label) {
-                    Some(expected_ty) => {
-                        if cmp_ty(&term_ty.kind, &expected_ty.kind, &tyenv) {
-                            Ok(Rc::clone(ty))
-                        } else {
-                            Err(
-                                error!("Variant `{}` expects type `{}`, got `{}`", ty, expected_ty, term_ty; term_ty.span),
-                            )
-                        }
-                    }
-                    None => Err(
-                        error!("The label `{}` is not a variant of `{}`", label, ty; type_t.span),
-                    ),
-                },
-                _ => Err(error!("Expected a variant type, got `{}`", ty; ty.span)),
-            }
+            let map = vec![(label, Rc::clone(&term_ty))]
+                .into_iter()
+                .collect::<HashMap<_, _>>();
+            Ok(Rc::new(Ty {
+                span: type_t.span,
+                kind: TyKind::Variant(map, vec![label]),
+            }))
         }
         TermKind::Case(ref value, ref branches, ref keys) => {
             let value_ty = type_of(value, env, tyenv)?;
@@ -298,7 +301,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
 
                 let term_ty = type_of(term, &mut env, tyenv)?;
                 if let Some(ret_ty) = &ret_ty {
-                    if !cmp_ty(&ret_ty.kind, &term_ty.kind, &tyenv) {
+                    if !is_subtype(&ret_ty.kind, &term_ty.kind, &tyenv) {
                         return Err(
                             error!("Expected type `{}`, got `{}`", ret_ty, term_ty; term_ty.span),
                         );
@@ -323,7 +326,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
             match t_ty.kind {
                 TyKind::Abstraction(ref par_ty, ref ret_ty) => {
-                    if cmp_ty(&par_ty.kind, &ret_ty.kind, tyenv) {
+                    if is_subtype(&par_ty.kind, &ret_ty.kind, tyenv) {
                         Ok(Rc::clone(ret_ty))
                     } else {
                         Err(
@@ -342,12 +345,12 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             let t1_ty = eval_ty(&type_of(t1, env, tyenv)?, &tyenv);
             let t2_ty = eval_ty(&type_of(t2, env, tyenv)?, &tyenv);
 
-            if !cmp_ty(&t1_ty.kind, &ty.kind, tyenv) {
+            if !is_subtype(&t1_ty.kind, &ty.kind, tyenv) {
                 return Err(error!("Expected type `{}`, got `{}", ty, t1_ty; t1.span));
             }
 
             match t2_ty.kind {
-                TyKind::List(ref t2_ty) if cmp_ty(&t2_ty.kind, &ty.kind, tyenv) => {
+                TyKind::List(ref t2_ty) if is_subtype(&t2_ty.kind, &ty.kind, tyenv) => {
                     Ok(Rc::new(Ty {
                         span: type_t.span,
                         kind: TyKind::List(Rc::clone(ty)),
@@ -360,7 +363,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
 
             match t_ty.kind {
-                TyKind::List(ref t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => {
+                TyKind::List(ref t_ty) if is_subtype(&t_ty.kind, &ty.kind, tyenv) => {
                     Ok(TY![bool; type_t.span])
                 }
                 _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.span)),
@@ -370,7 +373,9 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
 
             match t_ty.kind {
-                TyKind::List(ref t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => Ok(Rc::clone(ty)),
+                TyKind::List(ref t_ty) if is_subtype(&t_ty.kind, &ty.kind, tyenv) => {
+                    Ok(Rc::clone(ty))
+                }
                 _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.span)),
             }
         }
@@ -378,10 +383,12 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
 
             match t_ty.kind {
-                TyKind::List(ref t_ty) if cmp_ty(&t_ty.kind, &ty.kind, tyenv) => Ok(Rc::new(Ty {
-                    span: type_t.span,
-                    kind: TyKind::List(Rc::clone(ty)),
-                })),
+                TyKind::List(ref t_ty) if is_subtype(&t_ty.kind, &ty.kind, tyenv) => {
+                    Ok(Rc::new(Ty {
+                        span: type_t.span,
+                        kind: TyKind::List(Rc::clone(ty)),
+                    }))
+                }
                 _ => Err(error!("Expected type `List {}`, got `{}", ty, t_ty; t.span)),
             }
         }
@@ -412,7 +419,10 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
 
             match t1.kind {
                 TyKind::Ref(ref t1_ty) => {
-                    if cmp_ty(&t1_ty.kind, &t2.kind, tyenv) {
+                    // t2 must be equivalent to t1 (ie. t1 <: t2 ^ t2 <: t1)
+                    if is_subtype(&t1_ty.kind, &t2.kind, tyenv)
+                        && is_subtype(&t2.kind, &t1_ty.kind, tyenv)
+                    {
                         Ok(Rc::new(Ty {
                             span: type_t.span,
                             kind: TyKind::Unit,
@@ -437,45 +447,72 @@ pub fn eval_ty(t1: &LTy, tyenv: &TyEnv) -> LTy {
     }
 }
 
-pub fn cmp_ty<'a>(t1: &'a TyKind, t2: &'a TyKind, tyenv: &TyEnv) -> bool {
+pub fn is_subtype(t1: &TyKind, t2: &TyKind, tyenv: &TyEnv) -> bool {
     match (t1, t2) {
+        // Top is a supertype of everything
+        // S <: Top
+        (_, TyKind::Top) => true,
         (TyKind::Bool, TyKind::Bool) => true,
         (TyKind::Nat, TyKind::Nat) => true,
         (TyKind::Unit, TyKind::Unit) => true,
+        // p2 <: p1     r1 <: r2
+        // ---------------------
+        //      t1 <: t2
         (TyKind::Abstraction(p1, r1), TyKind::Abstraction(p2, r2)) => {
-            cmp_ty(&p1.kind, &p2.kind, tyenv) && cmp_ty(&r1.kind, &r2.kind, tyenv)
+            is_subtype(&p2.kind, &p1.kind, tyenv) && is_subtype(&r1.kind, &r2.kind, tyenv)
         }
-        (TyKind::Record(ref recs1, ref keys1), TyKind::Record(ref recs2, ref keys2)) => {
-            if keys1.len() != keys2.len() {
-                return false;
-            }
-            for (k1, k2) in keys1.iter().zip(keys2.iter()) {
-                if k1 != k2 {
-                    return false;
-                }
-                if !cmp_ty(
-                    &recs1.get(k1).unwrap().kind,
-                    &recs2.get(k1).unwrap().kind,
-                    &tyenv,
-                ) {
+        // t1 <: t2 if t1 is a superset of t2
+        // t1 <: t2 if every member of t1 is a subtype of the corresponding
+        //          member of t2 (if present)
+        (TyKind::Record(ref recs1, _), TyKind::Record(ref recs2, _)) => {
+            for (key, t2_ty) in recs2 {
+                if let Some(t1_ty) = recs1.get(key) {
+                    if !is_subtype(&t1_ty.kind, &t2_ty.kind, tyenv) {
+                        return false;
+                    }
+                } else {
                     return false;
                 }
             }
             true
         }
-        (TyKind::List(ref t1), TyKind::List(ref t2)) => cmp_ty(&t1.kind, &t2.kind, tyenv),
-        (TyKind::Ref(ref t1), TyKind::Ref(ref t2)) => cmp_ty(&t1.kind, &t2.kind, tyenv),
+        // t1 <: t2 if t1 has fewer or the same labels as t2
+        // t1 <: t2 if every member of t1 is a subtype of the corresponding
+        //          member of t2
+        (TyKind::Variant(ref vs1, _), TyKind::Variant(ref vs2, _)) => {
+            for (label, t1_ty) in vs1 {
+                if let Some(t2_ty) = vs2.get(label) {
+                    if !is_subtype(&t1_ty.kind, &t2_ty.kind, tyenv) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+
+            true
+        }
+        (TyKind::List(ref t1), TyKind::List(ref t2)) => is_subtype(&t1.kind, &t2.kind, tyenv),
+        // references are invariant, t1 and t2 must be equivalent under
+        // the subtype relation (i.e. each a subtype of the other).
+        (TyKind::Ref(ref t1), TyKind::Ref(ref t2)) => {
+            is_subtype(&t1.kind, &t2.kind, tyenv) && is_subtype(&t2.kind, &t1.kind, tyenv)
+        }
         (TyKind::Base(s1), TyKind::Base(s2)) if s1 == s2 => true,
         (TyKind::Base(s1), TyKind::Base(s2)) => {
             let s1 = tyenv.get(*s1);
             let s2 = tyenv.get(*s2);
             match (s1, s2) {
-                (Some(ty1), Some(ty2)) => cmp_ty(&ty1.kind, &ty2.kind, &tyenv),
+                (Some(ty1), Some(ty2)) => is_subtype(&ty1.kind, &ty2.kind, &tyenv),
                 _ => false,
             }
         }
-        (TyKind::Base(b), t) | (t, TyKind::Base(b)) => match tyenv.get(*b) {
-            Some(b_ty) => cmp_ty(&b_ty.kind, t, tyenv),
+        (t, TyKind::Base(b)) => match tyenv.get(*b) {
+            Some(b_ty) => is_subtype(t, &b_ty.kind, tyenv),
+            _ => false,
+        },
+        (TyKind::Base(b), t) => match tyenv.get(*b) {
+            Some(b_ty) => is_subtype(&b_ty.kind, t, tyenv),
             _ => false,
         },
         _ => false,
@@ -515,6 +552,7 @@ fn resolve_match_mut(p: &Pattern, t: &LTy, mut env: &mut Env, p_span: Span) -> R
                         .map(|k| trecs.get(&k).unwrap().span);
                     let start = span_iter.next().unwrap();
                     let p_span = span_iter.fold(start, |acc, cur| acc.with_hi(cur.hi));
+
                     // To probably do: Display missing tuple keys better
                     return Err(error!(
                         "The keys `{}` are not matched against",
@@ -1004,6 +1042,12 @@ mod tests {
             &mut env,
             &mut tyenv,
         );
+        check_env(
+            "(λmn:MaybeNat.mn) <some=0> as <some:Nat, none:Unit>",
+            expect![["MaybeNat"]],
+            &mut env,
+            &mut tyenv,
+        );
     }
 
     #[test]
@@ -1026,14 +1070,14 @@ mod tests {
 
         check_parse_error_env(
             "<some=0> as Nat",
-            expect![[r#"[12-15]TypeError: Expected a variant type, got `Nat`"#]],
+            expect![[r#"[0-8]TypeError: Expected type `Nat`, got `<some:Nat>`"#]],
             &mut env,
             &mut tyenv,
         );
 
         check_parse_error_env(
             "<invalid=0> as MaybeNat",
-            expect![[r#"[0-23]TypeError: The label `invalid` is not a variant of `MaybeNat`"#]],
+            expect![[r#"[0-11]TypeError: Expected type `MaybeNat`, got `<invalid:Nat>`"#]],
             &mut env,
             &mut tyenv,
         );
@@ -1228,6 +1272,204 @@ mod tests {
             incc
             "#,
             expect![[r#"Unit → Nat"#]],
+        );
+    }
+
+    #[test]
+    fn typecheck_subtypes() {
+        let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
+
+        check_env(
+            "let f1 = λx:{x:Nat,z:Bool}.{x=x.x, y=false};
+             let f2 = λx:{x:Nat}.x;
+             let f3 = λv:{x:Nat}.{x=v.x, y=false};
+             let f4 = λf:{x:Nat, z:Bool} → {x:Nat}.λv:{x:Nat, z:Bool}.f v;",
+            expect![["Unit"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        // S-RcdWidth
+        check_env(
+            "f1 {x=0, y=0, z=true}",
+            expect![["{x:Nat, y:Bool}"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        // S-Refl
+        check_env(
+            "f1 {x=0, z=false}",
+            expect![["{x:Nat, y:Bool}"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        // S-Perm
+        check_env(
+            "f1 {z=false, x=0}",
+            expect![["{x:Nat, y:Bool}"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "f2 (f1 {x=0, z=false})",
+            expect![["{x:Nat}"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "f2 (f1 {x=0, z=false})",
+            expect![["{x:Nat}"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        // S-Arrow
+        check_env(
+            "f4 f2 {x=0, z=true}",
+            expect![["{x:Nat}"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        // S-Arrow
+        check_env(
+            "f4 f3 {x=0, z=false}",
+            expect![["{x:Nat}"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check("(λx:Top.x) true", expect![["Top"]]);
+
+        // Upcasts
+        check("{x=true, y=false} as {x:Bool}", expect![["{x:Bool}"]]);
+
+        let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
+        check_env(
+            "type MaybeNat = <some:Nat, none:Unit>;
+             type None = <none:Unit>;
+             let f1 = λmn:MaybeNat.mn;",
+            expect![["Unit"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "f1 <none=unit> as None",
+            expect![["MaybeNat"]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "(λmn:MaybeNat.case mn of
+                                <some=n> => <some=succ n> as MaybeNat
+                                | <none=u> => <none=u> as MaybeNat)
+              <none=unit>",
+            expect![[r#"MaybeNat"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "isnil[{x:Nat}] nil[{x:Nat, y:Bool}]",
+            expect![[r#"Bool"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "nil[{x:Nat, y:Bool}] as List {x:Nat}",
+            expect![[r#"List {x:Nat}"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "if true then {x=0, y=false} else {y=true, x=1}",
+            expect![[r#"{y:Bool, x:Nat}"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_env(
+            "
+            type S = {x:Nat, y:Bool};
+            type T = {x:Nat};
+            cons[T] ({x=0, y=true} as S) nil[S]
+            ",
+            expect![[r#"List T"#]],
+            &mut env,
+            &mut tyenv,
+        );
+    }
+
+    #[test]
+    fn typecheck_error_subtypes() {
+        let mut env = Env::new();
+        let mut tyenv = TyEnv::new();
+
+        check_env(
+            "let f1 = λv:{x:Nat, z:Bool}.v;
+             let f2 = λf:{x:Nat} → {x:Nat}.f;
+             let f3 = λf:{x:Nat} → {x:Nat, z:Bool}.f;",
+            expect![[r#"Unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error_env(
+            "f1 {x=false, z=false}",
+            expect![[
+                r#"[3-21]TypeError: Expected type `{x:Nat, z:Bool}`, got `{x:Bool, z:Bool}`"#
+            ]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error_env(
+            "f1 {x=0}",
+            expect![[r#"[3-8]TypeError: Expected type `{x:Nat, z:Bool}`, got `{x:Nat}`"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error_env(
+            "f2 f1",
+            expect![[
+                r#"[3-5]TypeError: Expected type `{x:Nat} → {x:Nat}`, got `{x:Nat, z:Bool} → {x:Nat, z:Bool}`"#
+            ]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error(
+            "{x=true} as {x:Bool, y:Nat}",
+            expect![[r#"[0-8]TypeError: Expected type `{x:Bool, y:Nat}`, got `{x:Bool}`"#]],
+        );
+
+        check_parse_error_env(
+            "
+            type S = {x:Nat, y:Bool};
+            type T = {x:Nat};
+            cons[S] ({x=0} as T) nil[S]
+            ",
+            expect![[r#"[89-101]TypeError: Expected type `S`, got `{x:Nat}"#]],
+            &mut env,
+            &mut tyenv,
+        );
+
+        check_parse_error_env(
+            "cons[S] ({x=0} as T) nil[T]",
+            expect![[r#"[8-20]TypeError: Expected type `S`, got `{x:Nat}"#]],
+            &mut env,
+            &mut tyenv,
         );
     }
 }

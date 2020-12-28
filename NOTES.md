@@ -52,6 +52,7 @@ p ::=                   patterns:
     { lᵢ=pᵢ (i∈1..n) }          record pattern
 
 T ::=                   types:
+    Top                         maximum type
     T → T                       type of functions
     Bool                        type of booleans
     Nat                         type of natural numbers
@@ -322,6 +323,54 @@ iszero t₁ : Bool
 Γ | Σ ⊢ t₁ : Ref T₁₁  Γ | Σ ⊢ t₂ : T₁₁
 --------------------------------------  T-Assign
        Γ | Σ ⊢ t₁ := t₂ : Unit
+
+Γ ⊢ t : S       S <: T
+----------------------                  T-Sub
+      Γ ⊢ t : T
+```
+
+## Subtyping
+
+```
+S <: S                                  S-Refl
+
+S <: U          U <: T
+----------------------                  S-Trans
+        S <: T
+
+{lᵢ:Tᵢ (i∈1..n+k)} <: {lᵢ:Tᵢ (i∈1..n)}  S-RcdWidth
+
+        foreach i Sᵢ <: Tᵢ
+------------------------------------    S-RcdDepth
+{lᵢ:Sᵢ (i∈1..n)} <: {lᵢ:Tᵢ (i∈1..n)}
+
+{kⱼ:Sⱼ (ⱼ∈1..n)} is a permutation of {lᵢ:Tᵢ (i∈1..n)}
+-----------------------------------------------------   S-RcdPerm
+{kⱼ:Sⱼ (ⱼ∈1..n)} <: {lᵢ:Tᵢ (i∈1..n)}
+
+T₁ <: S₁        S₂ <: T₂
+------------------------                S-Arrow
+   S₁ → S₂ <: T₁ → T₂
+
+S <: Top                                S-Top
+
+<lᵢ:Tᵢ (i∈1..n)> <: <lᵢ:Tᵢ (i∈1..n+k)>  S-VariantWidth
+
+       foreach i Sᵢ <: Tᵢ
+------------------------------------    S-VariantDepth
+<lᵢ:Sᵢ (i∈1..n)> <: <lᵢ:Tᵢ (i∈1..n)>
+
+<kⱼ:Sⱼ (ⱼ∈1..n)> is a permutation of <lᵢ:Tᵢ (i∈1..n)>
+-----------------------------------------------------   S-VariantPerm
+<kⱼ:Sⱼ (ⱼ∈1..n)> <: <lᵢ:Tᵢ (i∈1..n)>
+
+S₁ <: T₁        T₁ <: S₁
+------------------------                S-Ref
+    Ref S₁ <: Ref T₁
+
+     S₁ <: T₁
+------------------                      S-List
+List S₁ <: List T₁
 ```
 
 ## Derived forms
