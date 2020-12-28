@@ -373,6 +373,20 @@ S₁ <: T₁        T₁ <: S₁
 List S₁ <: List T₁
 ```
 
+## Joins and Meets
+
+```
+A type J is called a join of a pair of types S and T
+    S ∨ T = J
+if S <: J and T <: J
+and for all types U, if S <: U and T <: U, then J <: U
+
+A type M is meet of S and T
+    S ∧ T = M
+if M <: S and M <: T
+and for all types L, if L <: S and L <: T, then L <: M
+```
+
 ## Derived forms
 
 ```

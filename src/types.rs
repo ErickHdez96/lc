@@ -188,23 +188,21 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             }
         }
         TermKind::If(ref cond, ref then, ref else_b) => {
-            match &type_of(cond, env, tyenv)?.as_ref().kind {
-                TyKind::Bool => {
-                    let then_ty = type_of(then, env, tyenv)?;
-                    let else_ty = type_of(else_b, env, tyenv)?;
+            let cond_ty = &type_of(cond, env, tyenv)?;
 
-                    if is_subtype(&then_ty.kind, &else_ty.kind, &tyenv)
-                        && is_subtype(&else_ty.kind, &then_ty.kind, &tyenv)
-                    {
-                        Ok(else_ty)
-                    } else {
-                        Err(error!(
-                            "Arms of conditional have different types: `{}`, and `{}`",
-                            then_ty, else_ty; type_t.span
-                        ))
-                    }
+            if is_subtype(&cond_ty.as_ref().kind, &TyKind::Bool, tyenv) {
+                let then_ty = type_of(then, env, tyenv)?;
+                let else_ty = type_of(else_b, env, tyenv)?;
+
+                match join_tys(&then_ty, &else_ty, tyenv) {
+                    Ok(joined_ty) if joined_ty.kind != TyKind::Top => Ok(joined_ty),
+                    _ => Err(error!(
+                        "Arms of conditional have different types: `{}`, and `{}`",
+                        then_ty, else_ty; type_t.span
+                    )),
                 }
-                ty => Err(error!("Guard conditional expects a Bool, got `{}`", ty; cond.span)),
+            } else {
+                Err(error!("Guard conditional expects a Bool, got `{}`", cond_ty; cond.span))
             }
         }
         TermKind::Let(ref p, ref t1, ref t2) => {
@@ -516,6 +514,101 @@ pub fn is_subtype(t1: &TyKind, t2: &TyKind, tyenv: &TyEnv) -> bool {
             _ => false,
         },
         _ => false,
+    }
+}
+
+fn join_tys(t1: &LTy, t2: &LTy, tyenv: &TyEnv) -> std::result::Result<LTy, String> {
+    if is_subtype(&t1.kind, &t2.kind, tyenv) {
+        Ok(Rc::clone(t2))
+    } else if is_subtype(&t2.kind, &t1.kind, tyenv) {
+        Ok(Rc::clone(t1))
+    } else {
+        let t1 = eval_ty(t1, tyenv);
+        let t2 = eval_ty(t2, tyenv);
+        match (&t1.kind, &t2.kind) {
+            // We use t1_labels to keep the same order of the labels
+            (TyKind::Record(ref t1_fields, t1_labels), TyKind::Record(ref t2_fields, _)) => {
+                let mut joined_fields = HashMap::new();
+                let mut joined_labels = vec![];
+
+                for label in t1_labels {
+                    let t1_field = t1_fields.get(label).unwrap();
+                    if let Some(t2_field) = t2_fields.get(label) {
+                        joined_labels.push(*label);
+                        joined_fields.insert(*label, join_tys(&t1_field, &t2_field, tyenv)?);
+                    }
+                }
+
+                Ok(Rc::new(Ty {
+                    span: t1.span.with_hi(t2.span.hi),
+                    kind: TyKind::Record(joined_fields, joined_labels),
+                }))
+            }
+            (TyKind::Abstraction(ref p1, ref r1), TyKind::Abstraction(ref p2, ref r2)) => {
+                Ok(Rc::new(Ty {
+                    span: t1.span.with_hi(t2.span.hi),
+                    kind: TyKind::Abstraction(meet_tys(p1, p2, tyenv)?, join_tys(r1, r2, tyenv)?),
+                }))
+            }
+            _ => Ok(Rc::new(Ty {
+                span: t1.span.with_hi(t2.span.hi),
+                kind: TyKind::Top,
+            })),
+        }
+    }
+}
+
+fn meet_tys(t1: &LTy, t2: &LTy, tyenv: &TyEnv) -> std::result::Result<LTy, String> {
+    if is_subtype(&t1.kind, &t2.kind, tyenv) {
+        Ok(Rc::clone(t1))
+    } else if is_subtype(&t2.kind, &t1.kind, tyenv) {
+        Ok(Rc::clone(t2))
+    } else {
+        let t1 = eval_ty(t1, tyenv);
+        let t2 = eval_ty(t2, tyenv);
+
+        match (&t1.kind, &t2.kind) {
+            (
+                TyKind::Record(ref t1_fields, ref t1_labels),
+                TyKind::Record(ref t2_fields, ref t2_labels),
+            ) => {
+                let mut meet_fields = HashMap::new();
+                let mut meet_labels = vec![];
+
+                for label in t1_labels {
+                    let t1_field = t1_fields.get(label).unwrap();
+                    meet_labels.push(*label);
+                    match t2_fields.get(label) {
+                        Some(t2_field) => {
+                            meet_fields.insert(*label, meet_tys(t1_field, t2_field, tyenv)?);
+                        }
+                        None => {
+                            meet_fields.insert(*label, Rc::clone(t1_field));
+                        }
+                    }
+                }
+
+                for label in t2_labels {
+                    if meet_fields.get(label).is_none() {
+                        let t2_field = t2_fields.get(label).unwrap();
+                        meet_labels.push(*label);
+                        meet_fields.insert(*label, Rc::clone(t2_field));
+                    }
+                }
+
+                Ok(Rc::new(Ty {
+                    span: t1.span.with_hi(t2.span.hi),
+                    kind: TyKind::Record(meet_fields, meet_labels),
+                }))
+            }
+            (TyKind::Abstraction(ref p1, ref r1), TyKind::Abstraction(ref p2, ref r2)) => {
+                Ok(Rc::new(Ty {
+                    span: t1.span.with_hi(t2.span.hi),
+                    kind: TyKind::Abstraction(join_tys(p1, p2, tyenv)?, meet_tys(r1, r2, tyenv)?),
+                }))
+            }
+            _ => Err(format!("Could not meet types `{}` and `{}`", t1, t2)),
+        }
     }
 }
 
@@ -1470,6 +1563,22 @@ mod tests {
             expect![[r#"[8-20]TypeError: Expected type `S`, got `{x:Nat}"#]],
             &mut env,
             &mut tyenv,
+        );
+    }
+
+    #[test]
+    fn join_types() {
+        check(
+            "if true then {x=0, y=0} else {x=1, z=false}",
+            expect![["{x:Nat}"]],
+        );
+        check(
+            "
+            let f1 = λv:{x:Nat, z:Bool}.{x=v.x, y=false};
+            let f2 = λv:{x:Nat, y:Bool}.{x=v.x, z=0};
+            if true then f1 else f2
+            ",
+            expect![["{x:Nat, z:Bool, y:Bool} → {x:Nat}"]],
         );
     }
 }
