@@ -550,6 +550,39 @@ fn join_tys(t1: &LTy, t2: &LTy, tyenv: &TyEnv) -> std::result::Result<LTy, Strin
                     kind: TyKind::Abstraction(meet_tys(p1, p2, tyenv)?, join_tys(r1, r2, tyenv)?),
                 }))
             }
+            (
+                TyKind::Variant(ref t1_variants, ref t1_labels),
+                TyKind::Variant(ref t2_variants, ref t2_labels),
+            ) => {
+                let mut joined_variants = HashMap::new();
+                let mut joined_labels = vec![];
+
+                for label in t1_labels {
+                    let variant = t1_variants.get(label).unwrap();
+                    joined_labels.push(*label);
+
+                    match t2_variants.get(label) {
+                        Some(t2_variant) => {
+                            joined_variants.insert(*label, join_tys(variant, t2_variant, tyenv)?);
+                        }
+                        None => {
+                            joined_variants.insert(*label, Rc::clone(variant));
+                        }
+                    }
+                }
+
+                for label in t2_labels {
+                    if joined_variants.get(label).is_none() {
+                        joined_labels.push(*label);
+                        joined_variants.insert(*label, Rc::clone(t2_variants.get(label).unwrap()));
+                    }
+                }
+
+                Ok(Rc::new(Ty {
+                    span: t1.span.with_hi(t2.span.hi),
+                    kind: TyKind::Variant(joined_variants, joined_labels),
+                }))
+            }
             _ => Ok(Rc::new(Ty {
                 span: t1.span.with_hi(t2.span.hi),
                 kind: TyKind::Top,
@@ -605,6 +638,29 @@ fn meet_tys(t1: &LTy, t2: &LTy, tyenv: &TyEnv) -> std::result::Result<LTy, Strin
                 Ok(Rc::new(Ty {
                     span: t1.span.with_hi(t2.span.hi),
                     kind: TyKind::Abstraction(join_tys(p1, p2, tyenv)?, meet_tys(r1, r2, tyenv)?),
+                }))
+            }
+            (
+                TyKind::Variant(ref t1_variants, ref t1_labels),
+                TyKind::Variant(ref t2_variants, _),
+            ) => {
+                let mut meet_variants = HashMap::new();
+                let mut meet_labels = vec![];
+
+                for label in t1_labels {
+                    let variant = t1_variants.get(label).unwrap();
+
+                    if let Some(t2_variant) = t2_variants.get(label) {
+                        if let Ok(meet_variant) = meet_tys(variant, t2_variant, tyenv) {
+                            meet_labels.push(*label);
+                            meet_variants.insert(*label, meet_variant);
+                        }
+                    }
+                }
+
+                Ok(Rc::new(Ty {
+                    span: t1.span.with_hi(t2.span.hi),
+                    kind: TyKind::Variant(meet_variants, meet_labels),
                 }))
             }
             _ => Err(format!("Could not meet types `{}` and `{}`", t1, t2)),
@@ -1567,7 +1623,7 @@ mod tests {
     }
 
     #[test]
-    fn join_types() {
+    fn join_meet_types() {
         check(
             "if true then {x=0, y=0} else {x=1, z=false}",
             expect![["{x:Nat}"]],
@@ -1579,6 +1635,20 @@ mod tests {
             if true then f1 else f2
             ",
             expect![["{x:Nat, z:Bool, y:Bool} → {x:Nat}"]],
+        );
+        check(
+            "if true then <some=0> else <none=unit>",
+            expect![["<some:Nat, none:Unit>"]],
+        );
+        check(
+            "
+            type MaybeNat = <some_nat:Nat, none:Unit>;
+            type MaybeBool = <some_bool:Bool, none:Unit>;
+            let f1 = λ_:MaybeNat.<some_nat=0>;
+            let f2 = λx:MaybeBool.x;
+            if true then f1 else f2
+            ",
+            expect![[r#"<none:Unit> → <some_nat:Nat, some_bool:Bool, none:Unit>"#]],
         );
     }
 }
