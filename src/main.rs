@@ -1,13 +1,13 @@
 mod repl;
-use std::{fmt, fs, io, path::Path};
-
 use lc::{
-    env::{base_env, base_tyenv},
-    parse,
+    env::{base_env, TyEnv},
+    parse, print_error,
     term::{eval, term_to_string},
     types::type_of,
+    Env,
 };
 use repl::run_repl;
+use std::{fmt, fs, io, path::Path};
 
 #[derive(Debug)]
 enum Error {
@@ -38,35 +38,39 @@ impl From<lc::Error> for Error {
     }
 }
 
-fn run_file(file_path: impl AsRef<Path>) -> Result<(), Error> {
+fn run_file(file_path: impl AsRef<Path>) -> Result<(Env<'static>, TyEnv<'static>), Error> {
     env_logger::init();
     let file_path = file_path.as_ref();
     let content = fs::read_to_string(file_path)?;
 
-    let mut env = base_env();
-    let mut tyenv = base_tyenv();
+    let (mut env, mut tyenv) = base_env();
 
-    let (term, ty) = parse(&content, &mut env)
+    match parse(&content, &mut env)
         .and_then(|p| eval(&p, &mut env, &mut tyenv))
         .and_then(|p| {
             Ok((
                 term_to_string(&p, &env)?,
                 type_of(&p, &mut env, &mut tyenv)?,
             ))
-        })?;
+        }) {
+        Ok((term, ty)) => println!("{} : {}", term, ty),
+        Err(e) => print_error(&e, &content),
+    }
 
-    println!("{} : {}", term, ty);
-
-    Ok(())
+    Ok((env, tyenv))
 }
 
 fn main() {
-    if let Some(file) = std::env::args().nth(1) {
-        if let Err(e) = run_file(file) {
-            eprintln!("{}", e);
-            std::process::exit(1);
+    let (mut env, mut tyenv) = if let Some(file) = std::env::args().nth(1) {
+        match run_file(file) {
+            Ok(envs) => envs,
+            Err(e) => {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
         }
     } else {
-        run_repl();
-    }
+        base_env()
+    };
+    run_repl(&mut env, &mut tyenv);
 }

@@ -128,7 +128,6 @@ impl<'a> Parser<'a> {
             TokenKind::RParen
             | TokenKind::Error
             | TokenKind::Period
-            | TokenKind::Whitespace
             | TokenKind::Then
             | TokenKind::Else
             | TokenKind::Colon

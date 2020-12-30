@@ -1322,33 +1322,34 @@ mod tests {
             &mut env,
             &mut tyenv,
         );
-        //check_env(
-        //    "let is_some = λs:MaybeNat.case s of <some=_> => true | _ => false;",
-        //    expect![[r#"unit"#]],
-        //    &mut env,
-        //    &mut tyenv,
-        //);
-        //expect![[r#"MaybeNat → Bool"#]].assert_eq(&format!("{}", env.get_type("is_some").unwrap()));
+        check_env(
+            "let is_some = λs:MaybeNat.case s of <some=_> => true | _ => false;",
+            expect![[r#"unit"#]],
+            &mut env,
+            &mut tyenv,
+        );
+        expect![[r#"MaybeNat → Bool"#]].assert_eq(&format!("{}", env.get_type("is_some").unwrap()));
 
-        //check_env(
-        //    "case <some=0> of <some=x> => <some=succ x>",
-        //    expect![[r#"<some=1>"#]],
-        //    &mut env
-        //, &mut tyenv);
+        check_env(
+            "case <some=0> of <some=x> => <some=succ x>",
+            expect![[r#"<some=1>"#]],
+            &mut env,
+            &mut tyenv,
+        );
 
-        //check_env(
-        //    "is_some <some=0> as MaybeNat",
-        //    expect![[r#"true"#]],
-        //    &mut env,
-        //    &mut tyenv,
-        //);
+        check_env(
+            "is_some <some=0> as MaybeNat",
+            expect![[r#"true"#]],
+            &mut env,
+            &mut tyenv,
+        );
 
-        //check_env(
-        //    "is_some <none=unit> as MaybeNat",
-        //    expect![[r#"false"#]],
-        //    &mut env,
-        //    &mut tyenv,
-        //);
+        check_env(
+            "is_some <none=unit> as MaybeNat",
+            expect![[r#"false"#]],
+            &mut env,
+            &mut tyenv,
+        );
 
         // Test correct term_map
         check_env(
@@ -1367,26 +1368,26 @@ mod tests {
             &mut tyenv,
         );
 
-        //check_env(
-        //    "(λm:MaybeNat. case m of _ => true) <none=unit> as MaybeNat",
-        //    expect![["true"]],
-        //    &mut env,
-        //    &mut tyenv,
-        //);
+        check_env(
+            "(λm:MaybeNat. case m of _ => true) <none=unit> as MaybeNat",
+            expect![["true"]],
+            &mut env,
+            &mut tyenv,
+        );
 
-        //check_env(
-        //    "(λm:MaybeNat. case m of _ => true) <none=unit> as MaybeNat",
-        //    expect![["true"]],
-        //    &mut env,
-        //    &mut tyenv,
-        //);
+        check_env(
+            "(λm:MaybeNat. case m of _ => true) <none=unit> as MaybeNat",
+            expect![["true"]],
+            &mut env,
+            &mut tyenv,
+        );
 
-        //check_env(
-        //    "let a = 3 in case <some=0> as MaybeNat of _ => a",
-        //    expect![["3"]],
-        //    &mut env,
-        //    &mut tyenv,
-        //);
+        check_env(
+            "let a = 3 in case <some=0> as MaybeNat of _ => a",
+            expect![["3"]],
+            &mut env,
+            &mut tyenv,
+        );
     }
 
     #[test]
@@ -1487,8 +1488,7 @@ mod tests {
             expect![["20"]],
         );
 
-        let mut env = base_env();
-        let mut tyenv = TyEnv::new();
+        let (mut env, mut tyenv) = base_env();
 
         check(
             r#"

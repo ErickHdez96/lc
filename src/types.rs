@@ -48,6 +48,7 @@ pub enum TyKind {
     /// <lᵢ:Tᵢ>
     Variant(HashMap<Symbol, LTy>, Vec<Symbol>),
     List(LTy),
+    // TODO: Implement Source and Sink (Ps. 221, 265)
     Ref(LTy),
 }
 
@@ -206,7 +207,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             }
         }
         TermKind::Let(ref p, ref t1, ref t2) => {
-            let t1 = type_of(t1, env, tyenv)?;
+            let t1 = eval_ty(&type_of(t1, env, tyenv)?, tyenv);
             let mut env = resolve_match(p, &t1, &env, type_t.span)?;
             type_of(t2, &mut env, tyenv)
         }
@@ -222,7 +223,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                 })
             }),
         TermKind::Projection(ref record, elem) => {
-            let record = type_of(record, env, tyenv)?;
+            let record = eval_ty(&type_of(record, env, tyenv)?, tyenv);
             match record.as_ref().kind {
                 TyKind::Record(ref elems, _) => match elems.get(&elem) {
                     Some(elem) => Ok(elem.clone()),
@@ -243,7 +244,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                 }
             }?;
 
-            if let Err(e) = resolve_match_mut(p, &ty, env, type_t.span) {
+            if let Err(e) = resolve_match_mut(p, &eval_ty(&ty, tyenv), env, type_t.span) {
                 remove_pattern_matches(p, env);
                 Err(e)
             } else {

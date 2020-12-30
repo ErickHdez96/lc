@@ -220,7 +220,7 @@ impl<'a> Env<'a> {
     }
 }
 
-pub fn base_env() -> Env<'static> {
+pub fn base_env() -> (Env<'static>, TyEnv<'static>) {
     match base_env_() {
         Ok(b) => b,
         Err(e) => {
@@ -230,19 +230,15 @@ pub fn base_env() -> Env<'static> {
     }
 }
 
-pub fn base_tyenv() -> TyEnv<'static> {
-    TyEnv::new()
-}
-
-fn base_env_() -> std::result::Result<Env<'static>, Box<dyn std::error::Error>> {
+fn base_env_() -> std::result::Result<(Env<'static>, TyEnv<'static>), Box<dyn std::error::Error>> {
     use crate::parser::parse;
     use crate::term::eval;
     let lc_std = include_str!("../std.lc");
     let mut env = Env::new();
-    let mut ty_env = TyEnv::new();
+    let mut tyenv = TyEnv::new();
 
-    eval(&parse(&lc_std, &mut env)?, &mut env, &mut ty_env)?;
-    Ok(env)
+    eval(&parse(&lc_std, &mut env)?, &mut env, &mut tyenv)?;
+    Ok((env, tyenv))
 }
 
 #[cfg(test)]

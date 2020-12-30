@@ -29,9 +29,6 @@ pub struct Token<'input> {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Logos)]
 pub enum TokenKind {
-    #[regex(r"\s+", logos::skip)]
-    Whitespace,
-
     #[token("true")]
     True,
     #[token("false")]
@@ -127,6 +124,8 @@ pub enum TokenKind {
     #[regex("_")]
     Wildcard,
 
+    #[regex(r"\s+", logos::skip)]
+    #[regex("#.*", logos::skip)]
     #[error]
     Error,
 
@@ -190,7 +189,6 @@ impl std::fmt::Display for TokenKind {
             f,
             "{}",
             match self {
-                Whitespace => "<whitespace>",
                 Lambda => "λ",
                 True => "true",
                 False => "false",
