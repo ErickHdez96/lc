@@ -1,0 +1,63 @@
+let not = λb:Bool.if b then false else true;
+let and = λb:Bool.λc:Bool.if b then c else false;
+let or = λb:Bool.λc:Bool.if b then true else c;
+let eqb = λb1:Bool.λb2:Bool.if b1 then b2 else not b2;
+let neqb = λb1:Bool.λb2:Bool.if b1 then not b2 else b2;
+
+letrec sum: Nat → Nat → Nat =
+    λa:Nat.λb:Nat.
+        if iszero a then b
+        else sum (pred a) (succ b);
+
+letrec mul: Nat → Nat → Nat =
+    λa:Nat.λb:Nat.
+        if iszero a then 0
+        else if iszero (pred a) then b
+        else sum (mul (pred a) b) b;
+
+letrec equal: Nat → Nat → Bool =
+    λa:Nat.λb:Nat.
+        if (and (iszero a) (iszero b)) then true
+        else if (or (iszero a) iszero b) then false
+        else equal (pred a) (pred b);
+
+letrec mapnat: (Nat → Nat) → (List Nat) → List Nat =
+    λfn:Nat → Nat.λlist:List Nat.
+        if isnil[Nat] list
+        then list
+        else cons[Nat] (fn head[Nat] list) (mapnat fn tail[Nat] list);
+
+letrec isevenodd: { iseven:Nat → Bool, isodd:Nat → Bool } = {
+    iseven = λn:Nat.if iszero n
+                    then true
+                    else isevenodd.isodd pred n,
+    isodd = λn:Nat. if iszero n
+                    then false
+                    else isevenodd.iseven pred n,
+};
+let {iseven=iseven, isodd=isodd} = isevenodd;
+
+letrec filternat: (Nat → Bool) → (List Nat) → List Nat =
+    λfn:Nat → Bool.λlist:List Nat.
+        if isnil[Nat] list
+        then list
+        else if fn head[Nat] list
+             then cons[Nat] head[Nat] list (filternat fn tail[Nat] list)
+             else filternat fn tail[Nat] list;
+
+letrec foldl: (Nat → Nat → Nat) → Nat → (List Nat) → Nat =
+    λfn:Nat → Nat → Nat.λacc:Nat.λlist:List Nat.
+        if isnil[Nat] list
+        then acc
+        else foldl fn (fn acc head[Nat] list) tail[Nat] list;
+
+# Build a list from `from` to `to` exclusive [from,to)
+letrec range: Nat → Nat → List Nat =
+    λfrom:Nat.λto:Nat.
+        if equal from to
+        then nil[Nat]
+        else cons[Nat] from (range (succ from) to);
+
+let sum_list = foldl sum 0;
+let prod_list = foldl mul 1;
+let len_list = foldl (λacc:Nat.λ_:Nat.succ acc) 0;
