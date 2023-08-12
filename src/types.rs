@@ -90,8 +90,8 @@ impl fmt::Display for Ty {
 
 impl fmt::Display for TyKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fn symbol_to_record_key(s: Symbol) -> String {
-            if s.as_str().parse::<u64>().is_ok() {
+        fn symbol_to_record_key(s: &Symbol) -> String {
+            if s.parse::<u64>().is_ok() {
                 String::new()
             } else {
                 format!("{}:", s)
@@ -117,8 +117,8 @@ impl fmt::Display for TyKind {
                     f,
                     "{{{}}}",
                     keys.iter()
-                        .copied()
-                        .map(|k| format!("{}{}", symbol_to_record_key(k), elems.get(&k).unwrap()))
+                        .cloned()
+                        .map(|k| format!("{}{}", symbol_to_record_key(&k), elems.get(&k).unwrap()))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -128,7 +128,7 @@ impl fmt::Display for TyKind {
                     f,
                     "<{}>",
                     keys.iter()
-                        .copied()
+                        .cloned()
                         .map(|k| format!("{}:{}", k, variants.get(&k).unwrap()))
                         .collect::<Vec<_>>()
                         .join(", "),
@@ -158,7 +158,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             t if is_subtype(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![bool; type_t.span]),
             t => Err(error!("Expected type `Nat`, got `{}`", t; t.span)),
         },
-        TermKind::Abstraction(v, ref ty, ref body) => {
+        TermKind::Abstraction(ref v, ref ty, ref body) => {
             let mut env = Env::with_parent(&env);
             env.insert_type(v, &ty)?;
             type_of(body, &mut env, tyenv).map(|body_ty| TY![abs ty, body_ty; type_t.span])
@@ -222,7 +222,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                     span: type_t.span,
                 })
             }),
-        TermKind::Projection(ref record, elem) => {
+        TermKind::Projection(ref record, ref elem) => {
             let record = eval_ty(&type_of(record, env, tyenv)?, tyenv);
             match record.as_ref().kind {
                 TyKind::Record(ref elems, _) => match elems.get(&elem) {
@@ -251,18 +251,18 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                 Ok(TY![unit; type_t.span])
             }
         }
-        TermKind::TypeDefinition(v, ref ty) => {
+        TermKind::TypeDefinition(ref v, ref ty) => {
             tyenv.insert(v, ty)?;
             Ok(TY![unit; type_t.span])
         }
-        TermKind::Variant(label, ref term) => {
+        TermKind::Variant(ref label, ref term) => {
             let term_ty = type_of(term, env, tyenv)?;
-            let map = vec![(label, Rc::clone(&term_ty))]
+            let map = vec![(Symbol::clone(label), Rc::clone(&term_ty))]
                 .into_iter()
                 .collect::<HashMap<_, _>>();
             Ok(Rc::new(Ty {
                 span: type_t.span,
-                kind: TyKind::Variant(map, vec![label]),
+                kind: TyKind::Variant(map, vec![Symbol::clone(label)]),
             }))
         }
         TermKind::Case(ref value, ref branches, ref keys) => {
@@ -281,7 +281,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                 if wildcard_found {
                     return Err(error!("Unreachable pattern"; type_t.span));
                 }
-                if key.as_str() == "_" {
+                if key == "_" {
                     wildcard_found = true;
                 }
             }
@@ -289,8 +289,8 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             for (variant, (var, term)) in branches {
                 let mut env = Env::with_parent(&env);
                 match variants.get(variant) {
-                    Some(var_ty) => env.insert_type(*var, var_ty)?,
-                    None if variant.as_str() == "_" => {}
+                    Some(var_ty) => env.insert_type(var, var_ty)?,
+                    None if variant == "_" => {}
                     None => {
                         return Err(
                             error!("The label `{}` is not a variant of `{}`", variant, value_ty; type_t.span),
@@ -438,7 +438,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
 
 pub fn eval_ty(t1: &LTy, tyenv: &TyEnv) -> LTy {
     match t1.as_ref().kind {
-        TyKind::Base(ref name) => match tyenv.get(*name) {
+        TyKind::Base(ref name) => match tyenv.get(name) {
             Some(ref ty) => eval_ty(ty, tyenv),
             None => Rc::clone(t1),
         },
@@ -499,18 +499,18 @@ pub fn is_subtype(t1: &TyKind, t2: &TyKind, tyenv: &TyEnv) -> bool {
         }
         (TyKind::Base(s1), TyKind::Base(s2)) if s1 == s2 => true,
         (TyKind::Base(s1), TyKind::Base(s2)) => {
-            let s1 = tyenv.get(*s1);
-            let s2 = tyenv.get(*s2);
+            let s1 = tyenv.get(s1);
+            let s2 = tyenv.get(s2);
             match (s1, s2) {
                 (Some(ty1), Some(ty2)) => is_subtype(&ty1.kind, &ty2.kind, &tyenv),
                 _ => false,
             }
         }
-        (t, TyKind::Base(b)) => match tyenv.get(*b) {
+        (t, TyKind::Base(b)) => match tyenv.get(b) {
             Some(b_ty) => is_subtype(t, &b_ty.kind, tyenv),
             _ => false,
         },
-        (TyKind::Base(b), t) => match tyenv.get(*b) {
+        (TyKind::Base(b), t) => match tyenv.get(b) {
             Some(b_ty) => is_subtype(&b_ty.kind, t, tyenv),
             _ => false,
         },
@@ -535,8 +535,9 @@ fn join_tys(t1: &LTy, t2: &LTy, tyenv: &TyEnv) -> std::result::Result<LTy, Strin
                 for label in t1_labels {
                     let t1_field = t1_fields.get(label).unwrap();
                     if let Some(t2_field) = t2_fields.get(label) {
-                        joined_labels.push(*label);
-                        joined_fields.insert(*label, join_tys(&t1_field, &t2_field, tyenv)?);
+                        joined_labels.push(Symbol::clone(label));
+                        joined_fields
+                            .insert(Symbol::clone(label), join_tys(&t1_field, &t2_field, tyenv)?);
                     }
                 }
 
@@ -560,22 +561,28 @@ fn join_tys(t1: &LTy, t2: &LTy, tyenv: &TyEnv) -> std::result::Result<LTy, Strin
 
                 for label in t1_labels {
                     let variant = t1_variants.get(label).unwrap();
-                    joined_labels.push(*label);
+                    joined_labels.push(Symbol::clone(label));
 
                     match t2_variants.get(label) {
                         Some(t2_variant) => {
-                            joined_variants.insert(*label, join_tys(variant, t2_variant, tyenv)?);
+                            joined_variants.insert(
+                                Symbol::clone(label),
+                                join_tys(variant, t2_variant, tyenv)?,
+                            );
                         }
                         None => {
-                            joined_variants.insert(*label, Rc::clone(variant));
+                            joined_variants.insert(Symbol::clone(label), Rc::clone(variant));
                         }
                     }
                 }
 
                 for label in t2_labels {
                     if joined_variants.get(label).is_none() {
-                        joined_labels.push(*label);
-                        joined_variants.insert(*label, Rc::clone(t2_variants.get(label).unwrap()));
+                        joined_labels.push(Symbol::clone(label));
+                        joined_variants.insert(
+                            Symbol::clone(label),
+                            Rc::clone(t2_variants.get(label).unwrap()),
+                        );
                     }
                 }
 
@@ -611,13 +618,14 @@ fn meet_tys(t1: &LTy, t2: &LTy, tyenv: &TyEnv) -> std::result::Result<LTy, Strin
 
                 for label in t1_labels {
                     let t1_field = t1_fields.get(label).unwrap();
-                    meet_labels.push(*label);
+                    meet_labels.push(Symbol::clone(label));
                     match t2_fields.get(label) {
                         Some(t2_field) => {
-                            meet_fields.insert(*label, meet_tys(t1_field, t2_field, tyenv)?);
+                            meet_fields
+                                .insert(Symbol::clone(label), meet_tys(t1_field, t2_field, tyenv)?);
                         }
                         None => {
-                            meet_fields.insert(*label, Rc::clone(t1_field));
+                            meet_fields.insert(Symbol::clone(label), Rc::clone(t1_field));
                         }
                     }
                 }
@@ -625,8 +633,8 @@ fn meet_tys(t1: &LTy, t2: &LTy, tyenv: &TyEnv) -> std::result::Result<LTy, Strin
                 for label in t2_labels {
                     if meet_fields.get(label).is_none() {
                         let t2_field = t2_fields.get(label).unwrap();
-                        meet_labels.push(*label);
-                        meet_fields.insert(*label, Rc::clone(t2_field));
+                        meet_labels.push(Symbol::clone(label));
+                        meet_fields.insert(Symbol::clone(label), Rc::clone(t2_field));
                     }
                 }
 
@@ -653,8 +661,8 @@ fn meet_tys(t1: &LTy, t2: &LTy, tyenv: &TyEnv) -> std::result::Result<LTy, Strin
 
                     if let Some(t2_variant) = t2_variants.get(label) {
                         if let Ok(meet_variant) = meet_tys(variant, t2_variant, tyenv) {
-                            meet_labels.push(*label);
-                            meet_variants.insert(*label, meet_variant);
+                            meet_labels.push(Symbol::clone(label));
+                            meet_variants.insert(Symbol::clone(label), meet_variant);
                         }
                     }
                 }
@@ -678,7 +686,7 @@ fn resolve_match<'a>(p: &Pattern, t: &LTy, env: &'a Env, p_span: Span) -> Result
 fn remove_pattern_matches(p: &Pattern, env: &mut Env) {
     match p {
         Pattern::Var(s) => {
-            env.remove_symbol(*s);
+            env.remove_symbol(s);
         }
         Pattern::Record(ref recs, _) => {
             for pat in recs.values() {
@@ -691,7 +699,7 @@ fn remove_pattern_matches(p: &Pattern, env: &mut Env) {
 fn resolve_match_mut(p: &Pattern, t: &LTy, mut env: &mut Env, p_span: Span) -> Result<()> {
     match p {
         Pattern::Var(s) => {
-            env.insert_type(*s, t)?;
+            env.insert_type(s, t)?;
             Ok(())
         }
         Pattern::Record(recs, keys) => match t.as_ref().kind {
@@ -715,9 +723,9 @@ fn resolve_match_mut(p: &Pattern, t: &LTy, mut env: &mut Env, p_span: Span) -> R
                     ));
                 }
 
-                for (i, key) in keys.iter().copied().enumerate() {
+                for (i, key) in keys.iter().cloned().enumerate() {
                     // The keys must be in the same order
-                    match tkeys.get(i).copied() {
+                    match tkeys.get(i).cloned() {
                         Some(k) if k == key => {
                             resolve_match_mut(
                                 recs.get(&key).unwrap(),

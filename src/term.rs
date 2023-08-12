@@ -1,9 +1,3 @@
-use crate::types::LTy;
-use crate::Error;
-use crate::ErrorKind;
-use crate::Span;
-use crate::Symbol;
-use crate::T;
 /// Evaluation strategies:
 ///
 /// Given the following expression:
@@ -71,7 +65,9 @@ use crate::T;
 /// Here call by value is used.
 use crate::{
     env::{Env, TyEnv},
-    types::type_of,
+    error::{Error, ErrorKind},
+    types::{type_of, LTy},
+    Span, Symbol, T,
 };
 use std::{cell::RefCell, collections::HashMap, convert::TryFrom};
 use std::{fmt, rc::Rc};
@@ -302,9 +298,9 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
                     span: eval_t.span,
                 })
             }),
-        TermKind::Projection(ref t, i) => {
+        TermKind::Projection(ref t, ref i) => {
             let t = eval_(t, env)?;
-            if i.as_str() == "0" {
+            if i == "0" {
                 return Err(error!(
                     "Cannot access a record with `0`, projections start from `1`"; eval_t.span
                 ));
@@ -324,13 +320,13 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
             Ok(T![unit; eval_t.span])
         }
         TermKind::TypeDefinition(_, _) => Ok(T![unit; eval_t.span]),
-        TermKind::Variant(label, ref term) => {
+        TermKind::Variant(ref label, ref term) => {
             let term = eval_(term, env)?;
             Ok(T![variant label, term; eval_t.span])
         }
         TermKind::Case(ref term, ref branches, _) => {
             let term = eval_(term, env)?;
-            let (variant, term) = if let TermKind::Variant(label, ref t) = term.kind {
+            let (variant, term) = if let TermKind::Variant(label, ref t) = &term.kind {
                 (label, t)
             } else {
                 return Err(
@@ -501,14 +497,14 @@ fn resolve_match<'a>(p: &Pattern, t: &LTerm, env: &'a Env) -> Result<Env<'a>> {
 fn resolve_match_mut(p: &Pattern, t: &LTerm, mut env: &mut Env) -> Result<()> {
     match p {
         Pattern::Var(s) => {
-            env.insert_term(*s, t)?;
+            env.insert_term(Symbol::clone(s), t)?;
             Ok(())
         }
         Pattern::Record(recs, keys) => match t.kind {
             TermKind::Record(ref trecs, ref tkeys) => {
-                for (i, key) in keys.iter().copied().enumerate() {
+                for (i, key) in keys.iter().cloned().enumerate() {
                     // The keys must be in the same order
-                    match tkeys.get(i).copied() {
+                    match tkeys.get(i).cloned() {
                         Some(k) if k == key => {
                             resolve_match_mut(
                                 recs.get(&key).unwrap(),
@@ -600,7 +596,7 @@ where
     ) -> Result<LTerm> {
         match t.kind {
             TermKind::Variable(idx) => on_var(idx, cutoff),
-            TermKind::Abstraction(v, ref ty, ref body) => {
+            TermKind::Abstraction(ref v, ref ty, ref body) => {
                 Ok(T![abs(v), ty, map(body, cutoff + 1, on_var)?; t.span])
             }
             TermKind::Application(ref t1, ref t2) => {
@@ -634,24 +630,27 @@ where
                                                map(then, cutoff, on_var)?,
                                                map(else_b, cutoff, on_var)?;
             t.span]),
-            TermKind::Projection(ref t, i) => Ok(T![proj map(t, cutoff, on_var)?, i; t.span]),
+            TermKind::Projection(ref t, ref i) => {
+                Ok(T![proj map(t, cutoff, on_var)?, Symbol::clone(i); t.span])
+            }
             TermKind::VariableDefinition(_, _) => {
                 Err(error!("A definition should not be mapped"; t.span))
             }
             TermKind::TypeDefinition(_, _) => {
                 Err(error!("A definition should not be mapped"; t.span))
             }
-            TermKind::Variant(label, ref term) => {
+            TermKind::Variant(ref label, ref term) => {
                 Ok(T![variant label, map(term, cutoff, on_var)?; t.span])
             }
             TermKind::Case(ref case_t, ref branches, ref symbols) => {
                 let case_t = map(case_t, cutoff, on_var)?;
                 symbols
                     .iter()
-                    .copied()
+                    .cloned()
                     .map(|k| {
                         let (branch_var, branch_term) = branches.get(&k).unwrap();
-                        map(branch_term, cutoff + 1, on_var).map(|t| (k, (*branch_var, t)))
+                        map(branch_term, cutoff + 1, on_var)
+                            .map(|t| (k, (Symbol::clone(branch_var), t)))
                     })
                     .collect::<Result<HashMap<_, _>>>()
                     .map(|elems| {
@@ -713,7 +712,7 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
             Some(v) => Ok(v.to_string()),
             None => Err(error!("Invalid de Bruijn index: {}", idx; t.span)),
         },
-        TermKind::Abstraction(param, ref ty, ref body) => {
+        TermKind::Abstraction(ref param, ref ty, ref body) => {
             let (param, env) = new_name(param, &env);
             Ok(format!("λ{}:{}.{}", param, ty, term_to_string(body, &env)?))
         }
@@ -779,35 +778,34 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
         TermKind::Record(ref elems, ref keys) => Ok(format!(
             "{{{}}}",
             keys.iter()
-                .cloned()
                 .map(
                     |k| term_to_string(elems.get(&k).unwrap(), &env).map(|e| format!(
                         "{}{}",
-                        symbol_to_record_key(k),
+                        symbol_to_record_key(&k),
                         e
                     ))
                 )
                 .collect::<Result<Vec<_>>>()?
                 .join(", ")
         )),
-        TermKind::Projection(ref t, i) => Ok(format!("{}.{}", term_to_string(t, &env)?, i,)),
+        TermKind::Projection(ref t, ref i) => Ok(format!("{}.{}", term_to_string(t, &env)?, i,)),
         TermKind::VariableDefinition(ref p, ref t) => {
             let env = resolve_match(p, t, &env)?;
             Ok(format!("let {} = {};", p, term_to_string(t, &env)?,))
         }
         TermKind::TypeDefinition(ref v, ref ty) => Ok(format!("type {} = {};", v, ty)),
-        TermKind::Variant(label, ref term) => {
+        TermKind::Variant(ref label, ref term) => {
             Ok(format!("<{}={}>", label, term_to_string(term, &env)?,))
         }
         TermKind::Case(ref case_v, ref branches, ref keys) => Ok(format!(
             "case {} of {}",
             term_to_string(case_v, &env)?,
             keys.iter()
-                .copied()
+                .cloned()
                 .map(|variant| {
                     let (x, term) = branches.get(&variant).unwrap();
-                    let (x, env) = new_name(*x, &env);
-                    let case_output = if variant.as_str() == "_" {
+                    let (x, env) = new_name(Symbol::clone(x), &env);
+                    let case_output = if &variant == "_" {
                         String::from("_")
                     } else {
                         format!("<{}={}>", variant, x)
@@ -843,18 +841,18 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
 
 fn new_name<'a>(s: impl Into<Symbol>, env: &'a Env) -> (Symbol, Env<'a>) {
     let mut current_symbol = s.into();
-    while env.get_db_index(current_symbol).is_some() {
+    while env.get_db_index(&current_symbol).is_some() {
         current_symbol = Symbol::from(format!("{}'", current_symbol));
     }
     let mut new_env = Env::with_parent(&env);
     new_env
-        .insert_symbol(current_symbol, Span::new(0, 1))
+        .insert_symbol(&current_symbol, Span::new(0, 1))
         .expect("Name should have been unique");
     (current_symbol, new_env)
 }
 
-fn symbol_to_record_key(s: Symbol) -> String {
-    if s.as_str().parse::<u64>().is_ok() {
+fn symbol_to_record_key(s: &Symbol) -> String {
+    if s.parse::<u64>().is_ok() {
         String::new()
     } else {
         format!("{}=", s)
@@ -869,8 +867,8 @@ impl fmt::Display for Pattern {
                 f,
                 "{{{}}}",
                 vars.iter()
-                    .copied()
-                    .map(|k| format!("{}{}", symbol_to_record_key(k), rec.get(&k).unwrap()))
+                    .cloned()
+                    .map(|k| format!("{}{}", symbol_to_record_key(&k), rec.get(&k).unwrap()))
                     .collect::<Vec<_>>()
                     .join(", "),
             ),
@@ -1105,7 +1103,7 @@ mod tests {
         let r#const = parse("λx:Bool.tru", &mut env)?;
         let const_shifted = shift(&r#const, 1)?;
         // Should shift true from 1 → 2
-        expect![[r#"Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 0, hi: 12 }, kind: Variable(2) }) }"#]].assert_eq(&format!("{:?}", const_shifted));
+        expect![[r#"Term { span: Span { lo: 0, hi: 12 }, kind: Abstraction(Atom('x' type=inline), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 0, hi: 12 }, kind: Variable(2) }) }"#]].assert_eq(&format!("{:?}", const_shifted));
 
         let test = parse("tru id", &mut env)?;
         let test_shifted = shift_above(&test, 3, 1)?;
@@ -1116,13 +1114,13 @@ mod tests {
         let book_example_1 = parse("λx:Bool.λy:Bool.x (y tru)", &mut env)?;
         let b_ex_1_shifted = shift(&book_example_1, 2)?;
         // Expected λ.λ.1 (0 4)
-        expect![[r#"Term { span: Span { lo: 0, hi: 27 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 27 }, kind: Abstraction(Symbol("y"), Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }, Term { span: Span { lo: 18, hi: 27 }, kind: Application(Term { span: Span { lo: 0, hi: 27 }, kind: Variable(1) }, Term { span: Span { lo: 20, hi: 27 }, kind: Application(Term { span: Span { lo: 0, hi: 27 }, kind: Variable(0) }, Term { span: Span { lo: 0, hi: 27 }, kind: Variable(4) }) }) }) }) }"#]].assert_eq(&format!("{:?}", b_ex_1_shifted));
+        expect![[r#"Term { span: Span { lo: 0, hi: 27 }, kind: Abstraction(Atom('x' type=inline), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 27 }, kind: Abstraction(Atom('y' type=inline), Ty { span: Span { lo: 13, hi: 17 }, kind: Bool }, Term { span: Span { lo: 18, hi: 27 }, kind: Application(Term { span: Span { lo: 0, hi: 27 }, kind: Variable(1) }, Term { span: Span { lo: 20, hi: 27 }, kind: Application(Term { span: Span { lo: 0, hi: 27 }, kind: Variable(0) }, Term { span: Span { lo: 0, hi: 27 }, kind: Variable(4) }) }) }) }) }"#]].assert_eq(&format!("{:?}", b_ex_1_shifted));
 
         // ↑²(λ.0 1 (λ. 0 1 2))
         let book_example_2 = parse("λx:Bool.x tru (λy:Bool.y x tru)", &mut env)?;
         let b_ex_2_shifted = shift(&book_example_2, 2)?;
         // Expected λ.0 3 (λ. 0 1 4)
-        expect![[r#"Term { span: Span { lo: 0, hi: 33 }, kind: Abstraction(Symbol("x"), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 33 }, kind: Application(Term { span: Span { lo: 9, hi: 14 }, kind: Application(Term { span: Span { lo: 0, hi: 33 }, kind: Variable(0) }, Term { span: Span { lo: 0, hi: 33 }, kind: Variable(3) }) }, Term { span: Span { lo: 15, hi: 33 }, kind: Abstraction(Symbol("y"), Ty { span: Span { lo: 20, hi: 24 }, kind: Bool }, Term { span: Span { lo: 25, hi: 32 }, kind: Application(Term { span: Span { lo: 25, hi: 28 }, kind: Application(Term { span: Span { lo: 0, hi: 33 }, kind: Variable(0) }, Term { span: Span { lo: 0, hi: 33 }, kind: Variable(1) }) }, Term { span: Span { lo: 0, hi: 33 }, kind: Variable(4) }) }) }) }) }"#]].assert_eq(&format!("{:?}", b_ex_2_shifted));
+        expect![[r#"Term { span: Span { lo: 0, hi: 33 }, kind: Abstraction(Atom('x' type=inline), Ty { span: Span { lo: 4, hi: 8 }, kind: Bool }, Term { span: Span { lo: 9, hi: 33 }, kind: Application(Term { span: Span { lo: 9, hi: 14 }, kind: Application(Term { span: Span { lo: 0, hi: 33 }, kind: Variable(0) }, Term { span: Span { lo: 0, hi: 33 }, kind: Variable(3) }) }, Term { span: Span { lo: 15, hi: 33 }, kind: Abstraction(Atom('y' type=inline), Ty { span: Span { lo: 20, hi: 24 }, kind: Bool }, Term { span: Span { lo: 25, hi: 32 }, kind: Application(Term { span: Span { lo: 25, hi: 28 }, kind: Application(Term { span: Span { lo: 0, hi: 33 }, kind: Variable(0) }, Term { span: Span { lo: 0, hi: 33 }, kind: Variable(1) }) }, Term { span: Span { lo: 0, hi: 33 }, kind: Variable(4) }) }) }) }) }"#]].assert_eq(&format!("{:?}", b_ex_2_shifted));
         Ok(())
     }
 

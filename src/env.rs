@@ -113,7 +113,7 @@ impl<'a> Env<'a> {
 
     pub(crate) fn insert_type(&mut self, s: impl Into<Symbol>, ty: &LTy) -> Result<()> {
         let s = s.into();
-        let mut val = self.insert_if_not_exists(s);
+        let val = self.insert_if_not_exists(Symbol::clone(&s));
         if val.ty.is_some() {
             Err(error!("Type `{}` already bound", s; ty.span))
         } else {
@@ -124,7 +124,7 @@ impl<'a> Env<'a> {
 
     pub(crate) fn insert_term(&mut self, s: impl Into<Symbol>, term: &LTerm) -> Result<()> {
         let s = s.into();
-        let mut val = self.insert_if_not_exists(s);
+        let val = self.insert_if_not_exists(Symbol::clone(&s));
         if val.term.is_some() {
             Err(error!("Variable `{}` already bound", s; term.span))
         } else {
@@ -135,7 +135,7 @@ impl<'a> Env<'a> {
 
     fn insert_if_not_exists(&mut self, s: Symbol) -> &mut EnvTerm {
         if !self.context.contains_key(&s) {
-            self.names.push(s);
+            self.names.push(Symbol::clone(&s));
         }
         let index = self.context.len();
         self.context.entry(s).or_insert(EnvTerm {

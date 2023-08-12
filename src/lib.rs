@@ -11,5 +11,5 @@ pub use env::Env;
 pub use error::{print_error, print_error_repl, Error, ErrorKind};
 pub use parser::parse;
 pub use span::Span;
-pub use string_interner::Symbol;
+pub use string_cache::DefaultAtom as Symbol;
 pub use term::{LTerm, Term, TermKind};
