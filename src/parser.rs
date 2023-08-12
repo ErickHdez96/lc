@@ -182,7 +182,7 @@ impl<'a> Parser<'a> {
                     Ok(T![var p, t1; span.with_hi(end.span.hi)])
                 } else {
                     self.eat(TokenKind::In)?;
-                    let mut env = resolve_match(&p, &env, p_span)?;
+                    let mut env = resolve_match(&p, env, p_span)?;
                     let t2 = self.parse_application_or_var(false, &mut env)?;
                     let span = span.with_hi(t2.span.hi);
                     Ok(T![let p, t1, t2; span])
@@ -234,7 +234,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let (ident, _) = self.eat_ident(false)?;
                 self.eat(TokenKind::Assign)?;
-                let ty = self.parse_type(env)?;
+                let ty = self.parse_type()?;
                 let end = self.eat(TokenKind::Semicolon)?;
                 Ok(Rc::new(Term {
                     span: start.with_hi(end.span.hi),
@@ -270,9 +270,9 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let (x, x_span) = self.eat_ident(false)?;
                 self.eat(TokenKind::Colon)?;
-                let ty = self.parse_type(env)?;
+                let ty = self.parse_type()?;
                 self.eat(TokenKind::Assign)?;
-                let mut fixenv = Env::with_parent(&env);
+                let mut fixenv = Env::with_parent(env);
                 fixenv.insert_symbol(&x, x_span)?;
                 let t1 = self.parse_application_or_var(false, &mut fixenv)?;
                 if self.current() == TokenKind::Semicolon {
@@ -317,7 +317,7 @@ impl<'a> Parser<'a> {
                 let start = self.current_span();
                 self.bump();
                 self.eat(TokenKind::LBracket)?;
-                let ty = self.parse_type(env)?;
+                let ty = self.parse_type()?;
                 let end = self.eat(TokenKind::RBracket)?.span;
                 Ok(Rc::new(Term {
                     span: start.with_hi(end.hi),
@@ -328,7 +328,7 @@ impl<'a> Parser<'a> {
                 let start = self.current_span();
                 self.bump();
                 self.eat(TokenKind::LBracket)?;
-                let ty = self.parse_type(env)?;
+                let ty = self.parse_type()?;
                 self.eat(TokenKind::RBracket)?;
                 let t1 = self.parse_term(env)?;
                 let t2 = self.parse_term(env)?;
@@ -342,7 +342,7 @@ impl<'a> Parser<'a> {
                 let start = self.current_span();
                 self.bump();
                 self.eat(TokenKind::LBracket)?;
-                let ty = self.parse_type(env)?;
+                let ty = self.parse_type()?;
                 self.eat(TokenKind::RBracket)?;
                 let t = self.parse_term(env)?;
                 let t_span = t.span;
@@ -355,7 +355,7 @@ impl<'a> Parser<'a> {
                 let start = self.current_span();
                 self.bump();
                 self.eat(TokenKind::LBracket)?;
-                let ty = self.parse_type(env)?;
+                let ty = self.parse_type()?;
                 self.eat(TokenKind::RBracket)?;
                 let t = self.parse_term(env)?;
                 let t_span = t.span;
@@ -368,7 +368,7 @@ impl<'a> Parser<'a> {
                 let start = self.current_span();
                 self.bump();
                 self.eat(TokenKind::LBracket)?;
-                let ty = self.parse_type(env)?;
+                let ty = self.parse_type()?;
                 self.eat(TokenKind::RBracket)?;
                 let t = self.parse_term(env)?;
                 let t_span = t.span;
@@ -524,7 +524,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::As => {
                     self.bump();
-                    let ty = self.parse_type(env)?;
+                    let ty = self.parse_type()?;
                     let span = t.span.with_hi(ty.span.hi);
                     t = T![asc t, ty; span];
                 }
@@ -603,7 +603,7 @@ impl<'a> Parser<'a> {
         self.bump();
         let (ident, _) = self.eat_ident(true)?;
         self.eat(TokenKind::Colon)?;
-        let ty = self.parse_type(env)?;
+        let ty = self.parse_type()?;
         self.eat(TokenKind::Period)?;
         let mut env = Env::with_parent(env);
         env.insert_type(&ident, &ty)?;
@@ -612,11 +612,11 @@ impl<'a> Parser<'a> {
         Ok(T![abs ident, ty, body; span])
     }
 
-    fn parse_type(&mut self, env: &mut Env) -> Result<LTy> {
+    fn parse_type(&mut self) -> Result<LTy> {
         let ty = match self.current() {
             TokenKind::LParen => {
                 self.bump();
-                let ty = self.parse_type(env)?;
+                let ty = self.parse_type()?;
                 self.eat(TokenKind::RParen)?;
                 ty
             }
@@ -639,7 +639,7 @@ impl<'a> Parser<'a> {
                 }),
                 t if t.text == "List" => {
                     let span = t.span;
-                    let inner_ty = self.parse_type(env)?;
+                    let inner_ty = self.parse_type()?;
                     Rc::new(Ty {
                         kind: TyKind::List(inner_ty),
                         span,
@@ -647,7 +647,7 @@ impl<'a> Parser<'a> {
                 }
                 t if t.text == "Ref" => {
                     let span = t.span;
-                    let inner_ty = self.parse_type(env)?;
+                    let inner_ty = self.parse_type()?;
                     Rc::new(Ty {
                         kind: TyKind::Ref(inner_ty),
                         span,
@@ -673,7 +673,7 @@ impl<'a> Parser<'a> {
                     } else {
                         Symbol::from((types.len() + 1).to_string())
                     };
-                    let ty = self.parse_type(env)?;
+                    let ty = self.parse_type()?;
                     keys.push(Symbol::clone(&key));
                     types.insert(key, ty);
                     if self.current() != TokenKind::Comma {
@@ -708,7 +708,7 @@ impl<'a> Parser<'a> {
                 while self.current() != TokenKind::Eof && self.current() != TokenKind::Gt {
                     let (key, _) = self.eat_ident(false)?;
                     self.eat(TokenKind::Colon)?;
-                    let ty = self.parse_type(env)?;
+                    let ty = self.parse_type()?;
                     keys.push(Symbol::clone(&key));
                     variants.insert(key, ty);
 
@@ -731,7 +731,7 @@ impl<'a> Parser<'a> {
 
         if self.current() == TokenKind::Arrow {
             self.bump();
-            let rh_ty = self.parse_type(env)?;
+            let rh_ty = self.parse_type()?;
             Ok(TY![abs ty, rh_ty; ty.span.with_hi(rh_ty.span.hi)])
         } else {
             Ok(ty)
@@ -769,7 +769,7 @@ impl<'a> Parser<'a> {
                 (kind, var, var_span)
             };
             self.eat(TokenKind::FatArrow)?;
-            let mut env = Env::with_parent(&env);
+            let mut env = Env::with_parent(env);
             env.insert_symbol(&var, var_span)?;
             let term = self.parse_application_or_var(false, &mut env)?;
             last_span = term.span;
@@ -788,12 +788,12 @@ impl<'a> Parser<'a> {
 }
 
 fn resolve_match<'a>(p: &Pattern, env: &'a Env, span: Span) -> Result<Env<'a>> {
-    let mut env = Env::with_parent(&env);
+    let mut env = Env::with_parent(env);
     resolve_match_mut(p, &mut env, span)?;
     Ok(env)
 }
 
-fn resolve_match_mut(p: &Pattern, mut env: &mut Env, span: Span) -> Result<()> {
+fn resolve_match_mut(p: &Pattern, env: &mut Env, span: Span) -> Result<()> {
     match p {
         Pattern::Var(x) => {
             env.insert_symbol(x, span)?;
@@ -801,7 +801,7 @@ fn resolve_match_mut(p: &Pattern, mut env: &mut Env, span: Span) -> Result<()> {
         }
         Pattern::Record(recs, keys) => {
             for key in keys {
-                resolve_match_mut(recs.get(&key).unwrap(), &mut env, span)?;
+                resolve_match_mut(recs.get(key).unwrap(), env, span)?;
             }
             Ok(())
         }

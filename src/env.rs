@@ -2,7 +2,7 @@ use crate::Symbol;
 use crate::{term::LTerm, Error, ErrorKind};
 use crate::{types::LTy, Span};
 use std::collections::HashMap;
-use std::default;
+
 use std::rc::Rc;
 
 macro_rules! error {
@@ -16,19 +16,10 @@ macro_rules! error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TyEnv<'a> {
     types: HashMap<Symbol, LTy>,
     parent: Option<&'a TyEnv<'a>>,
-}
-
-impl<'a> default::Default for TyEnv<'a> {
-    fn default() -> Self {
-        Self {
-            types: HashMap::new(),
-            parent: None,
-        }
-    }
 }
 
 impl<'a> TyEnv<'a> {
@@ -47,7 +38,7 @@ impl<'a> TyEnv<'a> {
         let s = s.into();
         self.types
             .get(&s)
-            .map(|ty| Rc::clone(ty))
+            .map(Rc::clone)
             .or_else(|| self.parent.and_then(|p| p.get(s)))
     }
 
@@ -69,21 +60,11 @@ struct EnvTerm {
     ty: Option<LTy>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Env<'a> {
     context: HashMap<Symbol, EnvTerm>,
     names: Vec<Symbol>,
     parent: Option<&'a Env<'a>>,
-}
-
-impl<'a> default::Default for Env<'a> {
-    fn default() -> Self {
-        Self {
-            context: HashMap::new(),
-            names: Vec::new(),
-            parent: None,
-        }
-    }
 }
 
 impl<'a> Env<'a> {
@@ -237,7 +218,7 @@ fn base_env_() -> std::result::Result<(Env<'static>, TyEnv<'static>), Box<dyn st
     let mut env = Env::new();
     let mut tyenv = TyEnv::new();
 
-    eval(&parse(&lc_std, &mut env)?, &mut env, &mut tyenv)?;
+    eval(&parse(lc_std, &mut env)?, &mut env, &mut tyenv)?;
     Ok((env, tyenv))
 }
 

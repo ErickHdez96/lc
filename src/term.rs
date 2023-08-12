@@ -193,8 +193,8 @@ pub enum Pattern {
 }
 
 pub fn eval(t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTerm> {
-    type_of(&t, env, tyenv)?;
-    eval_(&t, env)
+    type_of(t, env, tyenv)?;
+    eval_(t, env)
 }
 
 // See NOTES.md for the evaluation rules
@@ -220,11 +220,11 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
             match v1.kind {
                 // E-AppAbs
                 // (λ.t12)v2 → ↑⁻¹([0 → ↑¹(v2)]t12)
-                TermKind::Abstraction(_, _, ref body) => eval_(&term_subst_top(&v2, &body)?, env),
+                TermKind::Abstraction(_, _, ref body) => eval_(&term_subst_top(&v2, body)?, env),
                 _ if ignore_t1 => Ok(v2),
                 _ => Err(error!(
                     "Expected an abstraction, got {}",
-                    term_to_string(t1, &env)?;
+                    term_to_string(t1, env)?;
                     v1.span
                 )),
             }
@@ -241,7 +241,7 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
                 TermKind::False => eval_(else_b, env),
                 _ => Err(error!(
                     "Expected a boolean, got `{}`",
-                    term_to_string(&cond, &env)?;
+                    term_to_string(&cond, env)?;
                     cond.span
                 )),
             }
@@ -264,7 +264,7 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
                 TermKind::Succ(ref t) => Ok(Rc::clone(t)),
                 _ => Err(error!(
                     "Expected a numeric value, got `{}`",
-                    term_to_string(&t, &env)?;
+                    term_to_string(&t, env)?;
                     t.span
                 )),
             }
@@ -276,7 +276,7 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
                 TermKind::Succ(_) => Ok(T![false; eval_t.span]),
                 _ => Err(error!(
                     "Expected a numeric value, got `{}`",
-                    term_to_string(&t, &env)?;
+                    term_to_string(&t, env)?;
                     t.span
                 )),
             }
@@ -307,7 +307,7 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
             }
             let tb = t;
             match tb.kind {
-                TermKind::Record(ref elems, _) => match elems.get(&i) {
+                TermKind::Record(ref elems, _) => match elems.get(i) {
                     Some(e) => Ok(Rc::clone(e)),
                     None => Err(error!("Couldn't get element `{}` from record", i; eval_t.span)),
                 },
@@ -334,7 +334,7 @@ fn eval_(eval_t: &LTerm, env: &mut Env) -> Result<LTerm> {
                 );
             };
 
-            match branches.get(&variant) {
+            match branches.get(variant) {
                 Some((_, body)) => eval_(&term_subst_top(term, body)?, env),
                 None => match branches.get(&Symbol::from("_")) {
                     Some((_, body)) => eval_(&term_subst_top(term, body)?, env),
@@ -449,7 +449,7 @@ fn term_subst_top_pattern(v2: &LTerm, p: &Pattern, t12: &LTerm) -> Result<LTerm>
             // Since `let x = t1 in t2` is similar to (λx.t2)t1
             // We know that any reference to `x` has the de Bruijn index 0.
             // So we substitute the current variable with the current term.
-            shift(&substitute(t12, 0, &shift(&v2, 1)?)?, -1)
+            shift(&substitute(t12, 0, &shift(v2, 1)?)?, -1)
         }
         Pattern::Record(recs, keys) => match v2.kind {
             // If we find a record, we iterate over the keys from left to right,
@@ -489,12 +489,12 @@ fn term_subst_top_pattern(v2: &LTerm, p: &Pattern, t12: &LTerm) -> Result<LTerm>
 }
 
 fn resolve_match<'a>(p: &Pattern, t: &LTerm, env: &'a Env) -> Result<Env<'a>> {
-    let mut env = Env::with_parent(&env);
+    let mut env = Env::with_parent(env);
     resolve_match_mut(p, t, &mut env)?;
     Ok(env)
 }
 
-fn resolve_match_mut(p: &Pattern, t: &LTerm, mut env: &mut Env) -> Result<()> {
+fn resolve_match_mut(p: &Pattern, t: &LTerm, env: &mut Env) -> Result<()> {
     match p {
         Pattern::Var(s) => {
             env.insert_term(Symbol::clone(s), t)?;
@@ -509,7 +509,7 @@ fn resolve_match_mut(p: &Pattern, t: &LTerm, mut env: &mut Env) -> Result<()> {
                             resolve_match_mut(
                                 recs.get(&key).unwrap(),
                                 trecs.get(&key).unwrap(),
-                                &mut env,
+                                env,
                             )?;
                         }
                         Some(_) => {
@@ -549,7 +549,7 @@ fn substitute(t: &LTerm, db_idx: usize, arg: &LTerm) -> Result<LTerm> {
     term_map(t, 0, |idx, c| {
         if idx == c + db_idx {
             shift(
-                &arg,
+                arg,
                 isize::try_from(c).map_err(|_| error!("Too many bindings"; t.span))?,
             )
         } else {
@@ -713,7 +713,7 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
             None => Err(error!("Invalid de Bruijn index: {}", idx; t.span)),
         },
         TermKind::Abstraction(ref param, ref ty, ref body) => {
-            let (param, env) = new_name(param, &env);
+            let (param, env) = new_name(param, env);
             Ok(format!("λ{}:{}.{}", param, ty, term_to_string(body, &env)?))
         }
         TermKind::Application(ref t1, ref t2) => {
@@ -724,10 +724,10 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
             Ok(format!(
                 "{}{}{} {}{}{}",
                 t1_lp,
-                term_to_string(t1, &env)?,
+                term_to_string(t1, env)?,
                 t1_rp,
                 t2_lp,
-                term_to_string(t2, &env)?,
+                term_to_string(t2, env)?,
                 t2_rp
             ))
         }
@@ -735,7 +735,7 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
         TermKind::True => Ok(String::from("true")),
         TermKind::False => Ok(String::from("false")),
         TermKind::Zero => Ok(String::from("0")),
-        TermKind::Pred(ref t) => Ok(format!("pred {}", term_to_string(t, &env)?)),
+        TermKind::Pred(ref t) => Ok(format!("pred {}", term_to_string(t, env)?)),
         TermKind::Succ(ref t) => {
             let mut n = 1u64;
             let mut inner_t = Rc::clone(t);
@@ -751,23 +751,23 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
                         break;
                     }
                     _ => {
-                        return Ok(format!("succ {}", term_to_string(t, &env)?));
+                        return Ok(format!("succ {}", term_to_string(t, env)?));
                     }
                 }
             }
 
             Ok(format!("{}", n))
         }
-        TermKind::IsZero(ref t) => Ok(format!("iszero {}", term_to_string(t, &env)?)),
-        TermKind::Ascription(ref t, _) => term_to_string(t, &env),
+        TermKind::IsZero(ref t) => Ok(format!("iszero {}", term_to_string(t, env)?)),
+        TermKind::Ascription(ref t, _) => term_to_string(t, env),
         TermKind::If(ref c, ref t, ref e) => Ok(format!(
             "if {} then {} else {}",
-            term_to_string(c, &env)?,
-            term_to_string(t, &env)?,
-            term_to_string(e, &env)?,
+            term_to_string(c, env)?,
+            term_to_string(t, env)?,
+            term_to_string(e, env)?,
         )),
         TermKind::Let(ref p, ref t1, ref t2) => {
-            let env = resolve_match(p, t1, &env)?;
+            let env = resolve_match(p, t1, env)?;
             Ok(format!(
                 "let {} = {} in {}",
                 p,
@@ -779,32 +779,32 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
             "{{{}}}",
             keys.iter()
                 .map(
-                    |k| term_to_string(elems.get(&k).unwrap(), &env).map(|e| format!(
+                    |k| term_to_string(elems.get(k).unwrap(), env).map(|e| format!(
                         "{}{}",
-                        symbol_to_record_key(&k),
+                        symbol_to_record_key(k),
                         e
                     ))
                 )
                 .collect::<Result<Vec<_>>>()?
                 .join(", ")
         )),
-        TermKind::Projection(ref t, ref i) => Ok(format!("{}.{}", term_to_string(t, &env)?, i,)),
+        TermKind::Projection(ref t, ref i) => Ok(format!("{}.{}", term_to_string(t, env)?, i,)),
         TermKind::VariableDefinition(ref p, ref t) => {
-            let env = resolve_match(p, t, &env)?;
+            let env = resolve_match(p, t, env)?;
             Ok(format!("let {} = {};", p, term_to_string(t, &env)?,))
         }
         TermKind::TypeDefinition(ref v, ref ty) => Ok(format!("type {} = {};", v, ty)),
         TermKind::Variant(ref label, ref term) => {
-            Ok(format!("<{}={}>", label, term_to_string(term, &env)?,))
+            Ok(format!("<{}={}>", label, term_to_string(term, env)?,))
         }
         TermKind::Case(ref case_v, ref branches, ref keys) => Ok(format!(
             "case {} of {}",
-            term_to_string(case_v, &env)?,
+            term_to_string(case_v, env)?,
             keys.iter()
                 .cloned()
                 .map(|variant| {
                     let (x, term) = branches.get(&variant).unwrap();
-                    let (x, env) = new_name(Symbol::clone(x), &env);
+                    let (x, env) = new_name(Symbol::clone(x), env);
                     let case_output = if &variant == "_" {
                         String::from("_")
                     } else {
@@ -815,26 +815,24 @@ pub fn term_to_string(t: &LTerm, env: &Env) -> Result<String> {
                 .collect::<Result<Vec<_>>>()?
                 .join(" | "),
         )),
-        TermKind::Fix(ref t) => Ok(format!("fix {}", term_to_string(t, &env)?,)),
+        TermKind::Fix(ref t) => Ok(format!("fix {}", term_to_string(t, env)?,)),
         TermKind::Nil(ref ty) => Ok(format!("nil[{}]", ty)),
         TermKind::Cons(ref t1, ref t2, ref ty) => Ok(format!(
             "cons[{}] {} {}",
             ty,
-            term_to_string(t1, &env)?,
-            term_to_string(t2, &env)?,
+            term_to_string(t1, env)?,
+            term_to_string(t2, env)?,
         )),
-        TermKind::IsNil(ref t, ref ty) => {
-            Ok(format!("isnil[{}] {}", ty, term_to_string(t, &env)?,))
-        }
-        TermKind::Head(ref t, ref ty) => Ok(format!("head[{}] {}", ty, term_to_string(t, &env)?,)),
-        TermKind::Tail(ref t, ref ty) => Ok(format!("tail[{}] {}", ty, term_to_string(t, &env)?,)),
-        TermKind::Ref(ref t) => Ok(format!("ref {}", term_to_string(t, &env)?)),
-        TermKind::Location(ref t) => Ok(format!("ref {}", term_to_string(&t.borrow(), &env)?)),
-        TermKind::Deref(ref t) => Ok(format!("!{}", term_to_string(t, &env)?)),
+        TermKind::IsNil(ref t, ref ty) => Ok(format!("isnil[{}] {}", ty, term_to_string(t, env)?,)),
+        TermKind::Head(ref t, ref ty) => Ok(format!("head[{}] {}", ty, term_to_string(t, env)?,)),
+        TermKind::Tail(ref t, ref ty) => Ok(format!("tail[{}] {}", ty, term_to_string(t, env)?,)),
+        TermKind::Ref(ref t) => Ok(format!("ref {}", term_to_string(t, env)?)),
+        TermKind::Location(ref t) => Ok(format!("ref {}", term_to_string(&t.borrow(), env)?)),
+        TermKind::Deref(ref t) => Ok(format!("!{}", term_to_string(t, env)?)),
         TermKind::RefAssign(ref t1, ref t2) => Ok(format!(
             "{} := {}",
-            term_to_string(t1, &env)?,
-            term_to_string(t2, &env)?
+            term_to_string(t1, env)?,
+            term_to_string(t2, env)?
         )),
     }
 }
@@ -844,7 +842,7 @@ fn new_name<'a>(s: impl Into<Symbol>, env: &'a Env) -> (Symbol, Env<'a>) {
     while env.get_db_index(&current_symbol).is_some() {
         current_symbol = Symbol::from(format!("{}'", current_symbol));
     }
-    let mut new_env = Env::with_parent(&env);
+    let mut new_env = Env::with_parent(env);
     new_env
         .insert_symbol(&current_symbol, Span::new(0, 1))
         .expect("Name should have been unique");
@@ -960,7 +958,7 @@ mod tests {
             &term_to_string(
                 &eval(&parse(input, env).expect("Couldn't parse"), env, tyenv)
                     .expect("Couldn't evaluate"),
-                &env,
+                env,
             )
             .expect("Couldn't stringify"),
         );

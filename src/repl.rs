@@ -23,7 +23,7 @@ pub fn run_repl(env: &mut Env, tyenv: &mut TyEnv) {
                     rl.add_history_entry(line);
                     match parse(line, env)
                         .and_then(|p| eval(&p, env, tyenv))
-                        .and_then(|p| Ok((term_to_string(&p, &env)?, type_of(&p, env, tyenv)?)))
+                        .and_then(|p| Ok((term_to_string(&p, env)?, type_of(&p, env, tyenv)?)))
                     {
                         Ok((term, ty)) => println!("{} : {}", term, ty),
                         Err(e) => print_error_repl(&e, line),

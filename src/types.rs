@@ -147,20 +147,20 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
         TermKind::Zero => Ok(TY![nat; type_t.span]),
         TermKind::Unit => Ok(TY![unit; type_t.span]),
         TermKind::Ascription(ref t, ref ty) => match type_of(t, env, tyenv)?.as_ref() {
-            t if is_subtype(&t.kind, &ty.kind, &tyenv) => Ok(ty.clone()),
+            t if is_subtype(&t.kind, &ty.kind, tyenv) => Ok(ty.clone()),
             t => Err(error!("Expected type `{}`, got `{}`", ty, t; t.span)),
         },
         TermKind::Succ(ref t) | TermKind::Pred(ref t) => match &type_of(t, env, tyenv)?.as_ref() {
-            t if is_subtype(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![nat; type_t.span]),
+            t if is_subtype(&t.kind, &TyKind::Nat, tyenv) => Ok(TY![nat; type_t.span]),
             t => Err(error!("Expected type `Nat`, got `{}`", t; t.span)),
         },
         TermKind::IsZero(ref t) => match &type_of(t, env, tyenv)?.as_ref() {
-            t if is_subtype(&t.kind, &TyKind::Nat, &tyenv) => Ok(TY![bool; type_t.span]),
+            t if is_subtype(&t.kind, &TyKind::Nat, tyenv) => Ok(TY![bool; type_t.span]),
             t => Err(error!("Expected type `Nat`, got `{}`", t; t.span)),
         },
         TermKind::Abstraction(ref v, ref ty, ref body) => {
-            let mut env = Env::with_parent(&env);
-            env.insert_type(v, &ty)?;
+            let mut env = Env::with_parent(env);
+            env.insert_type(v, ty)?;
             type_of(body, &mut env, tyenv).map(|body_ty| TY![abs ty, body_ty; type_t.span])
         }
         TermKind::Variable(idx) => env
@@ -178,7 +178,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
                     // T1 <: S1     S2 <: T2
                     // ---------------------
                     //  S1 → S2 <: T1 → T2
-                    if is_subtype(&t2_ty.kind, &t11_ty.kind, &tyenv) {
+                    if is_subtype(&t2_ty.kind, &t11_ty.kind, tyenv) {
                         Ok(t12_ty.clone())
                     } else {
                         Err(error!("Expected type `{}`, got `{}`", t11_ty, t2_ty; t2.span))
@@ -208,7 +208,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
         }
         TermKind::Let(ref p, ref t1, ref t2) => {
             let t1 = eval_ty(&type_of(t1, env, tyenv)?, tyenv);
-            let mut env = resolve_match(p, &t1, &env, type_t.span)?;
+            let mut env = resolve_match(p, &t1, env, type_t.span)?;
             type_of(t2, &mut env, tyenv)
         }
         TermKind::Record(ref elems, ref keys) => keys
@@ -225,7 +225,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
         TermKind::Projection(ref record, ref elem) => {
             let record = eval_ty(&type_of(record, env, tyenv)?, tyenv);
             match record.as_ref().kind {
-                TyKind::Record(ref elems, _) => match elems.get(&elem) {
+                TyKind::Record(ref elems, _) => match elems.get(elem) {
                     Some(elem) => Ok(elem.clone()),
                     None => Err(error!(
                         "The element `{}` does not exist on the record `{}`",
@@ -236,7 +236,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             }
         }
         TermKind::VariableDefinition(ref p, ref t) => {
-            let ty = match type_of(&t, env, tyenv) {
+            let ty = match type_of(t, env, tyenv) {
                 ty @ Ok(_) => ty,
                 e @ Err(_) => {
                     remove_pattern_matches(p, env);
@@ -267,7 +267,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
         }
         TermKind::Case(ref value, ref branches, ref keys) => {
             let value_ty = type_of(value, env, tyenv)?;
-            let evald_value_ty = eval_ty(&value_ty, &tyenv);
+            let evald_value_ty = eval_ty(&value_ty, tyenv);
             let variants = if let TyKind::Variant(ref variants, _) = evald_value_ty.kind {
                 variants
             } else {
@@ -287,7 +287,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             }
 
             for (variant, (var, term)) in branches {
-                let mut env = Env::with_parent(&env);
+                let mut env = Env::with_parent(env);
                 match variants.get(variant) {
                     Some(var_ty) => env.insert_type(var, var_ty)?,
                     None if variant == "_" => {}
@@ -300,7 +300,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
 
                 let term_ty = type_of(term, &mut env, tyenv)?;
                 if let Some(ret_ty) = &ret_ty {
-                    if !is_subtype(&ret_ty.kind, &term_ty.kind, &tyenv) {
+                    if !is_subtype(&ret_ty.kind, &term_ty.kind, tyenv) {
                         return Err(
                             error!("Expected type `{}`, got `{}`", ret_ty, term_ty; term_ty.span),
                         );
@@ -322,7 +322,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             Ok(ret_ty.expect("at least one case branch"))
         }
         TermKind::Fix(ref t) => {
-            let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
+            let t_ty = eval_ty(&type_of(t, env, tyenv)?, tyenv);
             match t_ty.kind {
                 TyKind::Abstraction(ref par_ty, ref ret_ty) => {
                     if is_subtype(&par_ty.kind, &ret_ty.kind, tyenv) {
@@ -341,8 +341,8 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             kind: TyKind::List(Rc::clone(ty)),
         })),
         TermKind::Cons(ref t1, ref t2, ref ty) => {
-            let t1_ty = eval_ty(&type_of(t1, env, tyenv)?, &tyenv);
-            let t2_ty = eval_ty(&type_of(t2, env, tyenv)?, &tyenv);
+            let t1_ty = eval_ty(&type_of(t1, env, tyenv)?, tyenv);
+            let t2_ty = eval_ty(&type_of(t2, env, tyenv)?, tyenv);
 
             if !is_subtype(&t1_ty.kind, &ty.kind, tyenv) {
                 return Err(error!("Expected type `{}`, got `{}", ty, t1_ty; t1.span));
@@ -359,7 +359,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             }
         }
         TermKind::IsNil(ref t, ref ty) => {
-            let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
+            let t_ty = eval_ty(&type_of(t, env, tyenv)?, tyenv);
 
             match t_ty.kind {
                 TyKind::List(ref t_ty) if is_subtype(&t_ty.kind, &ty.kind, tyenv) => {
@@ -369,7 +369,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             }
         }
         TermKind::Head(ref t, ref ty) => {
-            let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
+            let t_ty = eval_ty(&type_of(t, env, tyenv)?, tyenv);
 
             match t_ty.kind {
                 TyKind::List(ref t_ty) if is_subtype(&t_ty.kind, &ty.kind, tyenv) => {
@@ -379,7 +379,7 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             }
         }
         TermKind::Tail(ref t, ref ty) => {
-            let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
+            let t_ty = eval_ty(&type_of(t, env, tyenv)?, tyenv);
 
             match t_ty.kind {
                 TyKind::List(ref t_ty) if is_subtype(&t_ty.kind, &ty.kind, tyenv) => {
@@ -392,29 +392,29 @@ pub fn type_of(type_t: &LTerm, env: &mut Env, tyenv: &mut TyEnv) -> Result<LTy> 
             }
         }
         TermKind::Ref(ref t) => {
-            let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
+            let t_ty = eval_ty(&type_of(t, env, tyenv)?, tyenv);
             Ok(Rc::new(Ty {
                 span: type_t.span,
                 kind: TyKind::Ref(t_ty),
             }))
         }
         TermKind::Location(ref t) => {
-            let t_ty = eval_ty(&type_of(&t.borrow(), env, tyenv)?, &tyenv);
+            let t_ty = eval_ty(&type_of(&t.borrow(), env, tyenv)?, tyenv);
             Ok(Rc::new(Ty {
                 span: type_t.span,
                 kind: TyKind::Ref(t_ty),
             }))
         }
         TermKind::Deref(ref t) => {
-            let t_ty = eval_ty(&type_of(t, env, tyenv)?, &tyenv);
+            let t_ty = eval_ty(&type_of(t, env, tyenv)?, tyenv);
             match t_ty.kind {
                 TyKind::Ref(ref t) => Ok(Rc::clone(t)),
                 _ => Err(error!("Cannot dereference type `{}`", t_ty; type_t.span)),
             }
         }
         TermKind::RefAssign(ref t1, ref t2) => {
-            let t1 = eval_ty(&type_of(t1, env, tyenv)?, &tyenv);
-            let t2 = eval_ty(&type_of(t2, env, tyenv)?, &tyenv);
+            let t1 = eval_ty(&type_of(t1, env, tyenv)?, tyenv);
+            let t2 = eval_ty(&type_of(t2, env, tyenv)?, tyenv);
 
             match t1.kind {
                 TyKind::Ref(ref t1_ty) => {
@@ -502,7 +502,7 @@ pub fn is_subtype(t1: &TyKind, t2: &TyKind, tyenv: &TyEnv) -> bool {
             let s1 = tyenv.get(s1);
             let s2 = tyenv.get(s2);
             match (s1, s2) {
-                (Some(ty1), Some(ty2)) => is_subtype(&ty1.kind, &ty2.kind, &tyenv),
+                (Some(ty1), Some(ty2)) => is_subtype(&ty1.kind, &ty2.kind, tyenv),
                 _ => false,
             }
         }
@@ -537,7 +537,7 @@ fn join_tys(t1: &LTy, t2: &LTy, tyenv: &TyEnv) -> std::result::Result<LTy, Strin
                     if let Some(t2_field) = t2_fields.get(label) {
                         joined_labels.push(Symbol::clone(label));
                         joined_fields
-                            .insert(Symbol::clone(label), join_tys(&t1_field, &t2_field, tyenv)?);
+                            .insert(Symbol::clone(label), join_tys(t1_field, t2_field, tyenv)?);
                     }
                 }
 
@@ -678,7 +678,7 @@ fn meet_tys(t1: &LTy, t2: &LTy, tyenv: &TyEnv) -> std::result::Result<LTy, Strin
 }
 
 fn resolve_match<'a>(p: &Pattern, t: &LTy, env: &'a Env, p_span: Span) -> Result<Env<'a>> {
-    let mut env = Env::with_parent(&env);
+    let mut env = Env::with_parent(env);
     resolve_match_mut(p, t, &mut env, p_span)?;
     Ok(env)
 }
@@ -696,7 +696,7 @@ fn remove_pattern_matches(p: &Pattern, env: &mut Env) {
     }
 }
 
-fn resolve_match_mut(p: &Pattern, t: &LTy, mut env: &mut Env, p_span: Span) -> Result<()> {
+fn resolve_match_mut(p: &Pattern, t: &LTy, env: &mut Env, p_span: Span) -> Result<()> {
     match p {
         Pattern::Var(s) => {
             env.insert_type(s, t)?;
@@ -707,7 +707,7 @@ fn resolve_match_mut(p: &Pattern, t: &LTy, mut env: &mut Env, p_span: Span) -> R
                 if tkeys.len() > keys.len() {
                     let mut span_iter = tkeys[keys.len()..]
                         .iter()
-                        .map(|k| trecs.get(&k).unwrap().span);
+                        .map(|k| trecs.get(k).unwrap().span);
                     let start = span_iter.next().unwrap();
                     let p_span = span_iter.fold(start, |acc, cur| acc.with_hi(cur.hi));
 
@@ -730,7 +730,7 @@ fn resolve_match_mut(p: &Pattern, t: &LTy, mut env: &mut Env, p_span: Span) -> R
                             resolve_match_mut(
                                 recs.get(&key).unwrap(),
                                 trecs.get(&key).unwrap(),
-                                &mut env,
+                                env,
                                 p_span,
                             )?;
                         }
